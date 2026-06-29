@@ -1,0 +1,14 @@
+C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\deps\pyo3_build_config-ab0767f9a356a5af.d: C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\lib.rs C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\errors.rs C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\impl_.rs C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config-file.txt C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config.txt
+
+C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\deps\libpyo3_build_config-ab0767f9a356a5af.rlib: C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\lib.rs C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\errors.rs C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\impl_.rs C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config-file.txt C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config.txt
+
+C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\deps\libpyo3_build_config-ab0767f9a356a5af.rmeta: C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\lib.rs C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\errors.rs C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\impl_.rs C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config-file.txt C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config.txt
+
+C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\lib.rs:
+C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\errors.rs:
+C:\Users\Jawarens\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.22.6\src\impl_.rs:
+C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config-file.txt:
+C:\Users\Jawarens\Downloads\vhs_capture\vhs_core\target\release\build\pyo3-build-config-1eea916f864dfdc4\out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.22.6
+# env-dep:OUT_DIR=C:\\Users\\Jawarens\\Downloads\\vhs_capture\\vhs_core\\target\\release\\build\\pyo3-build-config-1eea916f864dfdc4\\out

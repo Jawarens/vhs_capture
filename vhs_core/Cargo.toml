@@ -1,0 +1,17 @@
+[package]
+name = "vhs_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vhs_core"
+crate-type = ["cdylib"]   # Python extension (.pyd / .so)
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[profile.release]
+opt-level = 3
+lto = true          # link-time optimisation — smaller, faster binary
+codegen-units = 1   # single codegen unit for maximum optimisation
+panic = "abort"     # no unwinding overhead
