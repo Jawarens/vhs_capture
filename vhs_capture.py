@@ -1,7 +1,7 @@
 """
 VHS Capture — records webcam to AV1 and auto-splits on blue screen detection.
-Requires: pip install PyQt6 opencv-python numpy sounddevice
-Requires: ffmpeg with libsvtav1 or libaom-av1
+Requires: pip install PyQt6 opencv-python numpy sounddevice imageio-ffmpeg
+FFmpeg is bundled via imageio-ffmpeg if not found on system PATH.
 """
 
 import sys
@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import json
+import shutil
 import queue as _queue
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,26 @@ try:
     _AUDIO_AVAILABLE = True
 except Exception:
     _AUDIO_AVAILABLE = False
+
+# ── Resolve FFmpeg binary ──────────────────────────────────────────────────
+# Priority: system PATH → imageio-ffmpeg bundled binary → error at runtime
+def _find_ffmpeg() -> str:
+    """Return the path to a working ffmpeg binary."""
+    # 1. Check if ffmpeg is already on PATH
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    # 2. Try imageio-ffmpeg bundled binary (works inside PyInstaller .exe too)
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and Path(exe).exists():
+            return exe
+    except Exception:
+        pass
+    # 3. Give up — callers will get a clear error from subprocess
+    return "ffmpeg"
+
+FFMPEG_BIN = _find_ffmpeg()
 
 # ── Try to load the Rust extension; fall back to numpy gracefully ──────────
 try:
@@ -134,116 +155,176 @@ class AudioMeterThread(QThread):
 
 
 # ─────────────────────────────────────────────
-#  Hardware encoder detection
+#  Hardware encoder detection + profiles
 # ─────────────────────────────────────────────
 
-# Each entry: (label, is_hw, build_fn)
-# build_fn(crf, width, height) → list of extra ffmpeg args after "-c:v <enc>"
+def _system_ffmpeg() -> str | None:
+    """System FFmpeg on PATH — needed for hw encoders (NVENC/QSV)."""
+    import shutil as _sh
+    return _sh.which("ffmpeg")
+
+
+# Full encoder profiles. Each entry:
+#   name, label, is_hw, pixfmt,
+#   requires_hw_ffmpeg  — True means imageio-ffmpeg won't have it,
+#                         only attempt when system FFmpeg is available
+#   args(crf, w, h)     — extra flags after "-c:v <name>"
 _ENCODER_PROFILES = [
+    # ── NVIDIA NVENC ─────────────────────────────────────────────────
     {
-        "name":   "av1_nvenc",
-        "label":  "AV1  —  NVIDIA GPU ⚡",
-        "is_hw":  True,
-        "pixfmt": "yuv420p",
-        # NVENC AV1: constqp mode, qp controls quality (like crf)
-        "args":   lambda q, w, h: [
-            "-preset", "p4",       # balanced speed/quality (p1=fast … p7=best)
-            "-rc", "constqp",
-            "-qp", str(q),
-        ],
+        "name":  "av1_nvenc",
+        "label": "AV1  —  NVIDIA NVENC ⚡",
+        "is_hw": True, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": True,
+        # constqp = constant QP (same concept as CRF); p4 = balanced
+        "args": lambda q, w, h: ["-rc", "constqp", "-qp", str(q),
+                                  "-preset", "p4"],
     },
     {
-        "name":   "hevc_nvenc",
-        "label":  "HEVC  —  NVIDIA GPU ⚡",
-        "is_hw":  True,
-        "pixfmt": "yuv420p",
-        "args":   lambda q, w, h: [
-            "-preset", "p4",
-            "-rc", "constqp",
-            "-qp", str(q),
-        ],
+        "name":  "hevc_nvenc",
+        "label": "HEVC  —  NVIDIA NVENC ⚡",
+        "is_hw": True, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": True,
+        "args": lambda q, w, h: ["-rc", "constqp", "-qp", str(q),
+                                  "-preset", "p4"],
     },
     {
-        "name":   "av1_qsv",
-        "label":  "AV1  —  Intel QuickSync ⚡",
-        "is_hw":  True,
-        "pixfmt": "nv12",
-        # QSV: global_quality is the quality knob (lower = better, like crf)
-        "args":   lambda q, w, h: [
-            "-preset", "balanced",
-            "-global_quality", str(q),
-            "-look_ahead", "0",   # disable for low-latency capture
-        ],
+        "name":  "h264_nvenc",
+        "label": "H.264  —  NVIDIA NVENC ⚡",
+        "is_hw": True, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": True,
+        "args": lambda q, w, h: ["-rc", "constqp", "-qp", str(q),
+                                  "-preset", "p4"],
+    },
+    # ── Intel QuickSync ──────────────────────────────────────────────
+    {
+        "name":  "av1_qsv",
+        "label": "AV1  —  Intel QuickSync ⚡",
+        "is_hw": True, "pixfmt": "nv12",   # QSV requires nv12 input
+        "requires_hw_ffmpeg": True,
+        # preset 4 = medium (0=best…7=fastest); look_ahead_depth 0 = low latency
+        "args": lambda q, w, h: ["-global_quality", str(q),
+                                  "-look_ahead_depth", "0", "-preset", "4"],
     },
     {
-        "name":   "hevc_qsv",
-        "label":  "HEVC  —  Intel QuickSync ⚡",
-        "is_hw":  True,
-        "pixfmt": "nv12",
-        "args":   lambda q, w, h: [
-            "-preset", "balanced",
-            "-global_quality", str(q),
-            "-look_ahead", "0",
-        ],
+        "name":  "hevc_qsv",
+        "label": "HEVC  —  Intel QuickSync ⚡",
+        "is_hw": True, "pixfmt": "nv12",
+        "requires_hw_ffmpeg": True,
+        "args": lambda q, w, h: ["-global_quality", str(q),
+                                  "-look_ahead_depth", "0", "-preset", "4"],
     },
     {
-        "name":   "libsvtav1",
-        "label":  "AV1  —  SVT (CPU fast)",
-        "is_hw":  False,
-        "pixfmt": "yuv420p",
-        "args":   lambda q, w, h: ["-preset", "6", "-crf", str(q)],
+        "name":  "h264_qsv",
+        "label": "H.264  —  Intel QuickSync ⚡",
+        "is_hw": True, "pixfmt": "nv12",
+        "requires_hw_ffmpeg": True,
+        "args": lambda q, w, h: ["-global_quality", str(q),
+                                  "-look_ahead_depth", "0", "-preset", "4"],
+    },
+    # ── Software (bundled FFmpeg works fine for these) ───────────────
+    {
+        "name":  "libsvtav1",
+        "label": "AV1  —  SVT-AV1 (CPU fast)",
+        "is_hw": False, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": False,
+        "args": lambda q, w, h: ["-preset", "6", "-crf", str(q)],
     },
     {
-        "name":   "libaom-av1",
-        "label":  "AV1  —  libaom (CPU best)",
-        "is_hw":  False,
-        "pixfmt": "yuv420p",
-        "args":   lambda q, w, h: ["-cpu-used", "6", "-b:v", "0", "-crf", str(q)],
+        "name":  "libaom-av1",
+        "label": "AV1  —  libaom (CPU best quality)",
+        "is_hw": False, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": False,
+        "args": lambda q, w, h: ["-cpu-used", "6", "-b:v", "0", "-crf", str(q)],
     },
     {
-        "name":   "libx265",
-        "label":  "HEVC / H.265  —  CPU",
-        "is_hw":  False,
-        "pixfmt": "yuv420p",
-        "args":   lambda q, w, h: ["-preset", "fast", "-crf", str(q)],
+        "name":  "libx265",
+        "label": "HEVC / H.265  —  CPU",
+        "is_hw": False, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": False,
+        "args": lambda q, w, h: ["-preset", "fast", "-crf", str(q)],
     },
     {
-        "name":   "libx264",
-        "label":  "H.264  —  CPU",
-        "is_hw":  False,
-        "pixfmt": "yuv420p",
-        "args":   lambda q, w, h: ["-preset", "fast", "-crf", str(q)],
+        "name":  "libx264",
+        "label": "H.264  —  CPU",
+        "is_hw": False, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": False,
+        "args": lambda q, w, h: ["-preset", "fast", "-crf", str(q)],
     },
 ]
 
 
-def probe_encoders() -> list[dict]:
+def _friendly_hw_error(stderr: str) -> str:
+    s = stderr.lower()
+    if "libcuda" in s or "cannot load" in s:
+        return "NVIDIA driver not found — install Game Ready or Studio driver"
+    if "mfx session" in s or "mfxinit" in s or "error creating" in s:
+        return "Intel MFX session failed — update Intel graphics driver"
+    if "no capable devices" in s or "device open failed" in s:
+        return "GPU device unavailable"
+    if "unsupported" in s or "not support" in s:
+        return "GPU too old for this codec"
+    # Return the most useful line from stderr
+    for line in reversed(stderr.strip().splitlines()):
+        line = line.strip()
+        if line and ("error" in line.lower() or "fail" in line.lower()):
+            return line[:120]
+    return "unknown error"
+
+
+def probe_encoders():
     """
-    Test every encoder profile by encoding a real tiny frame.
-    Returns only the ones that actually work on this machine, hw first.
-    Stores the full profile dict (including args lambda) so FFmpegWriter
-    can build the exact right command without guessing.
+    Test each encoder profile by piping a real rawvideo frame.
+    Returns (working: list[dict], failed_hw: list[dict]).
+    hw encoders use system FFmpeg; sw encoders use whichever is available.
+    Each working profile has 'ffmpeg_bin' set to the binary that worked.
+    Each failed hw profile has 'fail_reason' explaining why.
     """
-    results = []
+    sys_ff  = _system_ffmpeg()
+    bnd_ff  = FFMPEG_BIN
+    working = []
+    failed  = []
+    black   = bytes(64 * 64 * 3)   # 64×64 black BGR frame
+
     for profile in _ENCODER_PROFILES:
-        enc    = profile["name"]
-        pixfmt = profile["pixfmt"]
-        args   = profile["args"](28, 64, 64)
+        enc       = profile["name"]
+        pixfmt    = profile["pixfmt"]
+        args      = profile["args"](28, 64, 64)
+        needs_sys = profile.get("requires_hw_ffmpeg", False)
+
+        ff = sys_ff if needs_sys else bnd_ff
+        if ff is None:
+            if profile["is_hw"]:
+                failed.append({**profile,
+                    "fail_reason": "system FFmpeg not found — install ffmpeg"})
+            continue
 
         cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "lavfi", "-i", "color=black:s=64x64:r=1:d=0.1",
-            "-c:v", enc,
-        ] + args + ["-pix_fmt", pixfmt, "-frames:v", "1", "-f", "null", "-"]
+            ff, "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", "64x64", "-r", "25", "-i", "pipe:0",
+        ]
+        if pixfmt == "nv12":
+            cmd += ["-vf", "format=nv12"]
+        cmd += ["-c:v", enc] + args + ["-pix_fmt", pixfmt,
+                "-frames:v", "1", "-f", "null", "-"]
 
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=10)
+            r = subprocess.run(cmd, input=black, capture_output=True, timeout=12)
             if r.returncode == 0:
-                results.append(dict(profile))   # copy so lambda survives
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+                p = dict(profile)
+                p["ffmpeg_bin"] = ff
+                working.append(p)
+            elif profile["is_hw"]:
+                reason = _friendly_hw_error(r.stderr.decode(errors="replace"))
+                failed.append({**profile, "fail_reason": reason})
+        except subprocess.TimeoutExpired:
+            if profile["is_hw"]:
+                failed.append({**profile, "fail_reason": "probe timed out"})
+        except FileNotFoundError:
+            break   # FFmpeg binary missing entirely
 
-    return results
+    return working, failed
 
 
 # ─────────────────────────────────────────────
@@ -267,29 +348,24 @@ class FFmpegWriter:
         self._lock        = threading.Lock()
 
     def start(self):
-        info   = self.encoder_info or {}
-        enc    = self.encoder
-        pixfmt = info.get("pixfmt", "yuv420p")
-        is_hw  = info.get("is_hw", False)
+        info    = self.encoder_info or {}
+        enc     = self.encoder
+        pixfmt  = info.get("pixfmt", "yuv420p")
+        is_hw   = info.get("is_hw", False)
+        ff      = info.get("ffmpeg_bin", FFMPEG_BIN)  # hw encoders use system FF
 
-        # Build encoder-specific args using the stored lambda
         args_fn = info.get("args")
-        if args_fn:
-            enc_args = args_fn(self.crf, self.width, self.height)
-        else:
-            # Fallback for unknown encoders
-            enc_args = ["-crf", str(self.crf)]
+        enc_args = args_fn(self.crf, self.width, self.height) if args_fn \
+                   else ["-crf", str(self.crf)]
 
         cmd = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
+            ff, "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-s", f"{self.width}x{self.height}",
             "-r", str(self.fps),
             "-i", "pipe:0",
         ]
-
-        # QSV needs a pixel format conversion from bgr24 → nv12
+        # QSV needs nv12; insert a pixel-format conversion filter
         if is_hw and pixfmt == "nv12":
             cmd += ["-vf", "format=nv12"]
 
@@ -852,6 +928,21 @@ class VHSCapture(QMainWindow):
             self._log_event("stop", "sounddevice not found",
                             "pip install sounddevice  (audio meter disabled)")
 
+        # FFmpeg availability
+        bundled = FFMPEG_BIN != "ffmpeg"
+        try:
+            r = subprocess.run([FFMPEG_BIN, "-version"], capture_output=True, timeout=5)
+            ff_ok = r.returncode == 0
+        except Exception:
+            ff_ok = False
+        if ff_ok:
+            self._log_event("info",
+                            f"FFmpeg found {'(bundled)' if bundled else '(on PATH)'}",
+                            FFMPEG_BIN)
+        else:
+            self._log_event("stop", "FFmpeg not found",
+                            "recording will fail — install FFmpeg or run build_windows.bat")
+
     # ── Reusable widget builders ─────────────
 
     def _make_btn(self, text, primary=False, danger=False):
@@ -1137,11 +1228,12 @@ class VHSCapture(QMainWindow):
         self._encoder_list: list[dict] = []
         # Probe encoders in background so the window opens instantly
         def _probe_bg():
-            encs = probe_encoders()
-            self._encoder_list = encs
+            working, failed = probe_encoders()
+            self._encoder_list = working
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._populate_encoders(encs))
+            QTimer.singleShot(0, lambda: self._populate_encoders(working, failed))
         threading.Thread(target=_probe_bg, daemon=True).start()
+        right.addWidget(cap_card)
 
         # Quality slider with named presets
         crf_card, crf_lay = self._section("QUALITY")
@@ -1204,39 +1296,49 @@ class VHSCapture(QMainWindow):
 
     # ── Settings persistence ──────────────────
 
-    def _populate_encoders(self, encs: list[dict]):
+    def _populate_encoders(self, working: list[dict], failed: list[dict] = None):
+        failed = failed or []
         self.combo_enc.clear()
-        if not encs:
+        if not working:
             self.combo_enc.addItem("No encoders found — check FFmpeg install")
-            return
-        for e in encs:
-            self.combo_enc.addItem(e["label"])
-        self.combo_enc.setEnabled(True)
+        else:
+            for e in working:
+                self.combo_enc.addItem(e["label"])
+            self.combo_enc.setEnabled(True)
 
-        # Try to restore saved encoder preference
+        # Restore saved encoder preference
         saved = load_settings().get("encoder", "")
         restored = False
-        for i, e in enumerate(encs):
+        for i, e in enumerate(working):
             if e["name"] == saved:
                 self.combo_enc.setCurrentIndex(i)
                 restored = True
                 break
 
-        # If no saved pref, auto-select best hw encoder
+        # Auto-select best hw encoder if no saved preference
         if not restored:
-            hw = [e for e in encs if e["is_hw"]]
+            hw = [e for e in working if e["is_hw"]]
             if hw:
-                self.combo_enc.setCurrentIndex(encs.index(hw[0]))
-                self._log_event("info", f"GPU encoder selected: {hw[0]['label']}", "")
-            else:
-                self._log_event("info", "No GPU encoder found", "using CPU SVT-AV1")
+                self.combo_enc.setCurrentIndex(working.index(hw[0]))
 
-        # Log full encoder list
-        hw_names  = [e["name"] for e in encs if e["is_hw"]]
-        sw_names  = [e["name"] for e in encs if not e["is_hw"]]
-        if hw_names:
-            self._log_event("info", f"GPU encoders: {', '.join(hw_names)}", "")
-        self._log_event("info", f"CPU encoders: {', '.join(sw_names)}", "")
+        # Log working encoders
+        hw_working = [e for e in working if e["is_hw"]]
+        sw_working = [e for e in working if not e["is_hw"]]
+        if hw_working:
+            self._log_event("info",
+                f"GPU encoders ready: {', '.join(e['name'] for e in hw_working)}", "")
+        else:
+            self._log_event("info", "No GPU encoders available", "using CPU encoding")
+        if sw_working:
+            self._log_event("info",
+                f"CPU encoders: {', '.join(e['name'] for e in sw_working)}", "")
+
+        # Log why each hw encoder failed
+        for e in failed:
+            self._log_event("stop",
+                f"{e['name']} unavailable", e.get("fail_reason", ""))
+
+    def _restore_settings(self, cfg: dict):
         self.lbl_outdir.setText(self._output_dir)
         self.edit_title.setText(cfg.get("title_prefix", ""))
         self.edit_part.setText(cfg.get("part_prefix", ""))

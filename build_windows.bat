@@ -1,28 +1,39 @@
 @echo off
 setlocal enabledelayedexpansion
+
+set LOGFILE=%~dp0build_log.txt
+echo Build started %date% %time% > "%LOGFILE%"
+
 echo ============================================================
-echo  VHS Capture -- Windows build (Python + Rust extension)
+echo  VHS Capture -- Windows build (Python + Rust + FFmpeg)
+echo  Log: %LOGFILE%
 echo ============================================================
 echo.
 
-:: ── Find Python ────────────────────────────────────────────────────
+:: ── Find Python and add its user Scripts dir to PATH ─────────────
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python not found. Install from https://python.org
     pause & exit /b 1
 )
-:: Capture the python executable path so all tools use the same one
-for /f "delims=" %%p in ('python -c "import sys; print(sys.executable)"') do set PYTHON=%%p
-echo Python: !PYTHON!
+for /f "delims=" %%p in ('python -c "import sys; print(sys.executable)"') do set "PYEXE=%%p"
+for /f "delims=" %%p in ('python -c "import sysconfig; print(sysconfig.get_path(\"scripts\",\"nt_user\"))"') do set "PYUSERSCRIPTS=%%p"
+for /f "delims=" %%p in ('python -c "import sysconfig; print(sysconfig.get_path(\"scripts\"))"') do set "PYSCRIPTS=%%p"
 
-:: ── Find/install Rust ──────────────────────────────────────────────
-set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+:: Prepend user Scripts + cargo to PATH so maturin/pyinstaller are reachable
+set "PATH=%PYUSERSCRIPTS%;%PYSCRIPTS%;%USERPROFILE%\.cargo\bin;%PATH%"
+
+echo Python: %PYEXE%
+echo Scripts: %PYUSERSCRIPTS%
+echo.
+
+:: ── Rust ──────────────────────────────────────────────────────────
 cargo --version >nul 2>&1
 if errorlevel 1 (
-    echo Rust not found. Downloading rustup...
+    echo Rust not found. Downloading rustup-init...
     curl --proto "=https" --tlsv1.2 -sSf -o rustup-init.exe https://win.rustup.rs/x86_64
     if errorlevel 1 (
-        echo ERROR: Could not download rustup. Check your internet connection.
+        echo ERROR: Could not download rustup. Check your internet.
         pause & exit /b 1
     )
     rustup-init.exe -y --default-toolchain stable --no-modify-path
@@ -30,121 +41,136 @@ if errorlevel 1 (
     set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
     cargo --version >nul 2>&1
     if errorlevel 1 (
-        echo ERROR: Rust install failed.
-        echo  Please install manually from https://rustup.rs then re-run this script.
+        echo ERROR: Rust install failed. Install from https://rustup.rs
         pause & exit /b 1
     )
-    echo Rust installed OK.
+    echo Rust installed.
 ) else (
-    for /f "tokens=2" %%v in ('cargo --version') do echo Rust %%v found.
+    echo Rust found.
 )
 
-:: ── Check FFmpeg ───────────────────────────────────────────────────
-ffmpeg -version >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo WARNING: FFmpeg not found on PATH.
-    echo   Option 1 ^(recommended^): winget install Gyan.FFmpeg
-    echo   Option 2: download from https://www.gyan.dev/ffmpeg/builds/
-    echo             extract and add the bin\ folder to your system PATH.
-    echo   The app will open but cannot record without FFmpeg.
-    echo.
-) else (
-    for /f "tokens=3" %%v in ('ffmpeg -version 2^>^&1 ^| findstr "ffmpeg version"') do echo FFmpeg %%v found.
+:: ── Clean stale PyInstaller/Python caches ────────────────────────
+echo.
+echo Cleaning stale build caches...
+if exist "%~dp0build" (
+    rmdir /s /q "%~dp0build"
+    echo   Removed build\
 )
+if exist "%~dp0dist" (
+    rmdir /s /q "%~dp0dist"
+    echo   Removed dist\
+)
+:: Remove .pyc files so PyInstaller always sees fresh source
+for /r "%~dp0" %%f in (*.pyc) do del "%%f" >nul 2>&1
+if exist "%~dp0__pycache__" rmdir /s /q "%~dp0__pycache__"
+echo   Done.
 
-:: ── Install Python deps via the exact python we found ──────────────
+:: ── Install Python dependencies ──────────────────────────────────
 echo.
 echo Installing Python dependencies...
-"!PYTHON!" -m pip install --upgrade maturin PyQt6 opencv-python numpy pyinstaller sounddevice
+python -m pip install --user --upgrade ^
+    maturin PyQt6 opencv-python numpy ^
+    sounddevice imageio-ffmpeg ^
+    pyinstaller >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
-    echo ERROR: pip install failed.
+    echo ERROR: pip install failed. See %LOGFILE%
     pause & exit /b 1
 )
 echo   Done.
 
-:: ── Build Rust extension using "python -m maturin" ─────────────────
-:: We use "python -m maturin" instead of "maturin" directly because
-:: pip installs scripts into a user-local Scripts folder that may not
-:: be on PATH in this session.
+:: ── Find maturin (handle --user install fallback) ─────────────────
+maturin --version >nul 2>&1
+if errorlevel 1 (
+    set "MATURIN=python -m maturin"
+    echo   maturin via: python -m maturin
+) else (
+    set "MATURIN=maturin"
+    echo   maturin via: maturin
+)
+
+:: ── Build Rust extension ──────────────────────────────────────────
 echo.
 echo Building Rust extension (vhs_core)...
-cd vhs_core
+cd "%~dp0vhs_core"
+%MATURIN% build --release >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo ERROR: Rust build failed. See %LOGFILE%
+    echo.
+    powershell -Command "Get-Content '%LOGFILE%' -Tail 30"
+    cd "%~dp0"
+    pause & exit /b 1
+)
 
-"!PYTHON!" -m maturin build --release
+:: Install the wheel
+set "WHEEL="
+for /f "delims=" %%f in ('dir /b /s "target\wheels\*.whl" 2^>nul') do set "WHEEL=%%f"
+if "%WHEEL%"=="" (
+    echo ERROR: No wheel produced. See %LOGFILE%
+    cd "%~dp0"
+    pause & exit /b 1
+)
+echo   Installing: %WHEEL%
+python -m pip install --user --force-reinstall "%WHEEL%" >> "%LOGFILE%" 2>&1
+cd "%~dp0"
+echo   vhs_core installed.
+
+:: ── Verify vhs_core loads ─────────────────────────────────────────
+echo.
+python -c "import vhs_core; print('  vhs_core OK')"
+if errorlevel 1 (
+    echo   WARNING: vhs_core failed to import -- app runs in fallback mode.
+)
+
+:: ── Verify FFmpeg (warn only -- imageio-ffmpeg provides a fallback) ──
+ffmpeg -version >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo ERROR: Rust build failed.
-    echo  Common causes:
-    echo    - Rust toolchain not on PATH  ^(re-open this window after rustup install^)
-    echo    - Missing Visual Studio C++ build tools
-    echo      Install from: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-    echo      Select "Desktop development with C++"
-    cd ..
-    pause & exit /b 1
-)
-
-:: Find and install the wheel
-for /f "delims=" %%f in ('dir /b /s "target\wheels\vhs_core*.whl" 2^>nul') do set WHEEL=%%f
-if "!WHEEL!"=="" (
-    echo ERROR: No wheel file found after build.
-    cd ..
-    pause & exit /b 1
-)
-echo Installing !WHEEL!...
-"!PYTHON!" -m pip install "!WHEEL!" --force-reinstall
-if errorlevel 1 (
-    echo ERROR: Wheel install failed.
-    cd ..
-    pause & exit /b 1
-)
-cd ..
-echo   Rust extension installed.
-
-:: ── Verify extension loads ─────────────────────────────────────────
-echo.
-echo Verifying vhs_core...
-"!PYTHON!" -c "import vhs_core; q=vhs_core.FrameQueue(4); r=vhs_core.detect_blue(bytes(64*64*3),64,64,0.5,16,16); print('  OK -- FrameQueue, detect_blue, bgr_to_rgb all working')"
-if errorlevel 1 (
-    echo   WARNING: vhs_core verification failed. App will run without Rust acceleration.
+    echo NOTE: FFmpeg not found on PATH.
+    echo   imageio-ffmpeg will provide a bundled binary for recording.
+    echo   For hardware GPU encoding install FFmpeg: winget install ffmpeg
+    echo.
 ) else (
-    echo   vhs_core OK.
+    echo FFmpeg found on PATH.
 )
 
-:: ── Bundle as standalone exe ───────────────────────────────────────
+:: ── Build standalone exe ──────────────────────────────────────────
 echo.
 echo Building standalone executable...
-"!PYTHON!" -m PyInstaller ^
+
+python -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name "VHS Capture" ^
     --add-data "README.md;." ^
     --hidden-import "cv2" ^
     --hidden-import "numpy" ^
-    --hidden-import "sounddevice" ^
     --hidden-import "vhs_core" ^
+    --hidden-import "sounddevice" ^
+    --hidden-import "imageio_ffmpeg" ^
     --hidden-import "PyQt6.QtCore" ^
     --hidden-import "PyQt6.QtGui" ^
     --hidden-import "PyQt6.QtWidgets" ^
     --collect-all "cv2" ^
     --collect-all "vhs_core" ^
     --collect-all "sounddevice" ^
-    vhs_capture.py
+    --collect-all "imageio_ffmpeg" ^
+    vhs_capture.py >> "%LOGFILE%" 2>&1
 
 if errorlevel 1 (
+    echo ERROR: PyInstaller failed. See %LOGFILE%
     echo.
-    echo BUILD FAILED. See errors above.
+    powershell -Command "Get-Content '%LOGFILE%' -Tail 40"
     pause & exit /b 1
 )
 
 echo.
 echo ============================================================
-echo  Build complete!
+echo  BUILD COMPLETE
 echo.
-echo  Executable:  dist\VHS Capture.exe
-echo  Rust boost:  vhs_core active
+echo  Executable : dist\VHS Capture.exe
 echo.
-echo  FFmpeg must be on PATH or placed next to the .exe
-echo  GPU encoders ^(NVENC / QSV^) are auto-detected at launch
+echo  FFmpeg     : bundled via imageio-ffmpeg (libsvtav1/libx264)
+echo               For GPU encoding (NVENC/QSV) also install:
+echo               winget install ffmpeg
 echo ============================================================
 pause
