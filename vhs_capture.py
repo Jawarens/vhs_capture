@@ -57,6 +57,13 @@ def _find_ffmpeg() -> str:
 
 FFMPEG_BIN = _find_ffmpeg()
 
+# On Windows, suppress the console window that briefly flashes for every
+# subprocess. Safe to unpack into both Popen() and run() calls.
+_NO_WINDOW = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform == "win32" else {}
+)
+
 # ── Try to load the Rust extension; fall back to numpy gracefully ──────────
 try:
     import vhs_core as _vhs_core
@@ -135,14 +142,14 @@ class AudioMeterThread(QThread):
         if not _AUDIO_AVAILABLE:
             return
         self._running = True
-        block = int(sd.default.samplerate or 44100) // 20  # 50ms blocks
         try:
-            with sd.InputStream(channels=1, blocksize=block,
-                                dtype='float32') as stream:
+            # Open with a reasonable default blocksize; query actual rate after open
+            with sd.InputStream(channels=1, dtype='float32') as stream:
+                actual_rate = stream.samplerate or 44100
+                block = max(512, int(actual_rate // 20))  # ~50ms blocks
                 while self._running:
                     data, _ = stream.read(block)
                     rms = float(np.sqrt(np.mean(data ** 2)))
-                    # Normalise: -60dBFS → 0, 0dBFS → 1
                     db  = max(-60.0, 20 * np.log10(rms + 1e-9))
                     lvl = (db + 60) / 60
                     self.level.emit(min(1.0, max(0.0, lvl)))
@@ -151,6 +158,7 @@ class AudioMeterThread(QThread):
 
     def stop(self):
         self._running = False
+        self.quit()
         self.wait(1000)
 
 
@@ -159,173 +167,286 @@ class AudioMeterThread(QThread):
 # ─────────────────────────────────────────────
 
 def _system_ffmpeg() -> str | None:
-    """System FFmpeg on PATH — needed for hw encoders (NVENC/QSV)."""
+    """
+    Find a system FFmpeg that supports hw encoders (NVENC/QSV).
+    Checks PATH first, then common Windows install locations from
+    winget, chocolatey, scoop, and manual installs.
+    """
     import shutil as _sh
-    return _sh.which("ffmpeg")
+
+    # 1. Already on PATH (most common after winget/choco/scoop with shell restart)
+    found = _sh.which("ffmpeg") or _sh.which("ffmpeg.exe")
+    if found:
+        return found
+
+    # 2. Common Windows locations where FFmpeg ends up NOT on PATH
+    if sys.platform == "win32":
+        import os
+        candidates = []
+
+        # winget installs to per-user AppData or ProgramFiles
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+        prog_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        user_profile = os.environ.get("USERPROFILE", "")
+
+        candidates += [
+            # winget / Microsoft Store style
+            os.path.join(local_app, "Microsoft", "WinGet", "Packages",
+                         "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
+                         "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe"),
+            # Chocolatey
+            os.path.join("C:\\", "ProgramData", "chocolatey", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "tools", "ffmpeg", "bin", "ffmpeg.exe"),
+            # Scoop
+            os.path.join(user_profile, "scoop", "apps", "ffmpeg", "current",
+                         "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "ProgramData", "scoop", "apps", "ffmpeg",
+                         "current", "bin", "ffmpeg.exe"),
+            # Manual installs in common spots
+            os.path.join(prog_files, "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join(prog_files_x86, "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "ffmpeg", "ffmpeg.exe"),
+            # Next to our own exe (user may have placed it there)
+            os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
+        ]
+
+        # Also scan winget packages directory for any ffmpeg build
+        winget_pkg_dir = os.path.join(local_app, "Microsoft", "WinGet", "Packages")
+        if os.path.isdir(winget_pkg_dir):
+            for entry in os.listdir(winget_pkg_dir):
+                if "ffmpeg" in entry.lower() or "gyan" in entry.lower():
+                    for root, dirs, files in os.walk(
+                            os.path.join(winget_pkg_dir, entry)):
+                        for f in files:
+                            if f.lower() == "ffmpeg.exe":
+                                candidates.append(os.path.join(root, f))
+
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+
+    return None
 
 
 # Full encoder profiles. Each entry:
 #   name, label, is_hw, pixfmt,
-#   requires_hw_ffmpeg  — True means imageio-ffmpeg won't have it,
-#                         only attempt when system FFmpeg is available
-#   args(crf, w, h)     — extra flags after "-c:v <name>"
+#   requires_hw_ffmpeg — True if imageio-ffmpeg won't have it
+#   probe_size         — minimum valid resolution for this encoder
+#   args(crf, w, h)    — extra flags after "-c:v <name>"
 _ENCODER_PROFILES = [
     # ── NVIDIA NVENC ─────────────────────────────────────────────────
+    # NVENC AV1 minimum resolution: 145×145. H264/HEVC: 128×128.
+    # constqp = constant QP (like CRF). p4 = balanced. tune=hq for quality.
+    # -surfaces 8: pre-allocated encode surfaces to avoid stalls.
     {
-        "name":  "av1_nvenc",
-        "label": "AV1  —  NVIDIA NVENC ⚡",
+        "name": "av1_nvenc", "label": "AV1  —  NVIDIA NVENC ⚡",
         "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True,
-        # constqp = constant QP (same concept as CRF); p4 = balanced
-        "args": lambda q, w, h: ["-rc", "constqp", "-qp", str(q),
-                                  "-preset", "p4"],
+        "requires_hw_ffmpeg": True, "probe_size": "256x256",
+        "args": lambda q, w, h: [
+            "-gpu", "0",
+            "-preset", "p4", "-tune", "hq",
+            "-rc", "constqp", "-qp", str(q), "-surfaces", "8",
+        ],
     },
     {
-        "name":  "hevc_nvenc",
-        "label": "HEVC  —  NVIDIA NVENC ⚡",
+        "name": "hevc_nvenc", "label": "HEVC  —  NVIDIA NVENC ⚡",
         "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True,
-        "args": lambda q, w, h: ["-rc", "constqp", "-qp", str(q),
-                                  "-preset", "p4"],
+        "requires_hw_ffmpeg": True, "probe_size": "256x256",
+        "args": lambda q, w, h: [
+            "-gpu", "0",
+            "-preset", "p4", "-tune", "hq",
+            "-rc", "constqp", "-qp", str(q), "-surfaces", "8",
+        ],
     },
     {
-        "name":  "h264_nvenc",
-        "label": "H.264  —  NVIDIA NVENC ⚡",
+        "name": "h264_nvenc", "label": "H.264  —  NVIDIA NVENC ⚡",
         "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True,
-        "args": lambda q, w, h: ["-rc", "constqp", "-qp", str(q),
-                                  "-preset", "p4"],
+        "requires_hw_ffmpeg": True, "probe_size": "256x256",
+        "args": lambda q, w, h: [
+            "-gpu", "0",
+            "-preset", "p4", "-tune", "hq",
+            "-rc", "constqp", "-qp", str(q), "-surfaces", "8",
+        ],
     },
     # ── Intel QuickSync ──────────────────────────────────────────────
+    # Use yuv420p input (QSV handles upload internally, avoids filter errors).
+    # global_quality 1-51: lower = better quality.
+    # look_ahead_depth 0 = lowest latency for live capture.
     {
-        "name":  "av1_qsv",
-        "label": "AV1  —  Intel QuickSync ⚡",
-        "is_hw": True, "pixfmt": "nv12",   # QSV requires nv12 input
-        "requires_hw_ffmpeg": True,
-        # preset 4 = medium (0=best…7=fastest); look_ahead_depth 0 = low latency
-        "args": lambda q, w, h: ["-global_quality", str(q),
-                                  "-look_ahead_depth", "0", "-preset", "4"],
+        "name": "av1_qsv", "label": "AV1  —  Intel QuickSync ⚡",
+        "is_hw": True, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": True, "probe_size": "256x256",
+        "args": lambda q, w, h: [
+            "-preset", "4", "-global_quality", str(q), "-look_ahead_depth", "0",
+        ],
     },
     {
-        "name":  "hevc_qsv",
-        "label": "HEVC  —  Intel QuickSync ⚡",
-        "is_hw": True, "pixfmt": "nv12",
-        "requires_hw_ffmpeg": True,
-        "args": lambda q, w, h: ["-global_quality", str(q),
-                                  "-look_ahead_depth", "0", "-preset", "4"],
+        "name": "hevc_qsv", "label": "HEVC  —  Intel QuickSync ⚡",
+        "is_hw": True, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": True, "probe_size": "256x256",
+        "args": lambda q, w, h: [
+            "-preset", "4", "-global_quality", str(q), "-look_ahead_depth", "0",
+        ],
     },
     {
-        "name":  "h264_qsv",
-        "label": "H.264  —  Intel QuickSync ⚡",
-        "is_hw": True, "pixfmt": "nv12",
-        "requires_hw_ffmpeg": True,
-        "args": lambda q, w, h: ["-global_quality", str(q),
-                                  "-look_ahead_depth", "0", "-preset", "4"],
+        "name": "h264_qsv", "label": "H.264  —  Intel QuickSync ⚡",
+        "is_hw": True, "pixfmt": "yuv420p",
+        "requires_hw_ffmpeg": True, "probe_size": "256x256",
+        "args": lambda q, w, h: [
+            "-preset", "4", "-global_quality", str(q), "-look_ahead_depth", "0",
+        ],
     },
-    # ── Software (bundled FFmpeg works fine for these) ───────────────
+    # ── Software ─────────────────────────────────────────────────────
+    # -threads 0 = use all CPU cores for FFmpeg overhead.
+    # SVT-AV1 manages its own thread pool via -preset.
+    # libaom -row-mt 1 enables row-based multi-threading.
+    # x265 pools=+ uses all cores; frame-threads=4 for parallel frame encoding.
     {
-        "name":  "libsvtav1",
-        "label": "AV1  —  SVT-AV1 (CPU fast)",
+        "name": "libsvtav1", "label": "AV1  —  SVT-AV1 (CPU fast)",
         "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False,
-        "args": lambda q, w, h: ["-preset", "6", "-crf", str(q)],
+        "requires_hw_ffmpeg": False, "probe_size": "64x64",
+        "args": lambda q, w, h: ["-preset", "6", "-crf", str(q), "-threads", "0"],
     },
     {
-        "name":  "libaom-av1",
-        "label": "AV1  —  libaom (CPU best quality)",
+        "name": "libaom-av1", "label": "AV1  —  libaom (CPU best quality)",
         "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False,
-        "args": lambda q, w, h: ["-cpu-used", "6", "-b:v", "0", "-crf", str(q)],
+        "requires_hw_ffmpeg": False, "probe_size": "64x64",
+        "args": lambda q, w, h: [
+            "-cpu-used", "6", "-b:v", "0", "-crf", str(q),
+            "-threads", "0", "-row-mt", "1",
+        ],
     },
     {
-        "name":  "libx265",
-        "label": "HEVC / H.265  —  CPU",
+        "name": "libx265", "label": "HEVC / H.265  —  CPU",
         "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False,
-        "args": lambda q, w, h: ["-preset", "fast", "-crf", str(q)],
+        "requires_hw_ffmpeg": False, "probe_size": "64x64",
+        "args": lambda q, w, h: [
+            "-preset", "fast", "-crf", str(q),
+            "-threads", "0", "-x265-params", "pools=+:frame-threads=4",
+        ],
     },
     {
-        "name":  "libx264",
-        "label": "H.264  —  CPU",
+        "name": "libx264", "label": "H.264  —  CPU",
         "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False,
-        "args": lambda q, w, h: ["-preset", "fast", "-crf", str(q)],
+        "requires_hw_ffmpeg": False, "probe_size": "64x64",
+        "args": lambda q, w, h: ["-preset", "fast", "-crf", str(q), "-threads", "0"],
     },
 ]
 
 
-def _friendly_hw_error(stderr: str) -> str:
+def _friendly_hw_error(enc: str, stderr: str) -> str:
     s = stderr.lower()
-    if "libcuda" in s or "cannot load" in s:
-        return "NVIDIA driver not found — install Game Ready or Studio driver"
-    if "mfx session" in s or "mfxinit" in s or "error creating" in s:
-        return "Intel MFX session failed — update Intel graphics driver"
-    if "no capable devices" in s or "device open failed" in s:
-        return "GPU device unavailable"
+    is_qsv   = "qsv" in enc
+    is_nvenc = "nvenc" in enc
+
+    # ── QSV-specific ─────────────────────────────────────────────────
+    if is_qsv:
+        if "invalid argument" in s or "error code: -22" in s:
+            return (f"{enc}: Intel MFX/OneVPL runtime not installed. "
+                    "Install 'Intel Graphics Driver' from intel.com/graphics "
+                    "AND 'Intel oneVPL GPU Runtime' from github.com/intel/libvpl")
+        if "mfx session" in s or "mfxinit" in s or "error creating" in s:
+            return (f"{enc}: MFX session failed — install Intel oneVPL GPU Runtime: "
+                    "github.com/intel/libvpl/releases")
+        if "unsupported" in s or "not support" in s:
+            return f"{enc}: Intel GPU too old for this codec (requires 6th gen Intel Core or newer)"
+        if "no capable devices" in s or "device open failed" in s:
+            return f"{enc}: no Intel GPU found or driver not loaded"
+
+    # ── NVENC-specific ───────────────────────────────────────────────
+    if is_nvenc:
+        if "invalid argument" in s or "error code: -22" in s:
+            return (f"{enc}: invalid argument — driver mismatch or codec not supported "
+                    "(AV1 NVENC requires RTX 3000+; ensure Game Ready/Studio driver is current)")
+        if "libcuda" in s or "cannot load nvcuda" in s or "no cuda" in s:
+            return f"{enc}: NVIDIA driver not found — install Game Ready or Studio driver"
+        if "no capable devices" in s or "device open failed" in s:
+            return f"{enc}: no capable NVIDIA GPU found"
+        if "not enough" in s and "surface" in s:
+            return f"{enc}: not enough VRAM surfaces — try a lower resolution"
+
+    # ── Generic ──────────────────────────────────────────────────────
     if "unsupported" in s or "not support" in s:
-        return "GPU too old for this codec"
-    # Return the most useful line from stderr
+        return f"{enc}: GPU too old or codec not supported"
     for line in reversed(stderr.strip().splitlines()):
         line = line.strip()
         if line and ("error" in line.lower() or "fail" in line.lower()):
-            return line[:120]
-    return "unknown error"
+            return line[:140]
+    return f"{enc}: probe failed (unknown error)"
 
 
 def probe_encoders():
     """
-    Test each encoder profile by piping a real rawvideo frame.
+    Test each encoder by piping real rawvideo at its minimum valid resolution.
+    All probes run in parallel via ThreadPoolExecutor.
     Returns (working: list[dict], failed_hw: list[dict]).
-    hw encoders use system FFmpeg; sw encoders use whichever is available.
-    Each working profile has 'ffmpeg_bin' set to the binary that worked.
-    Each failed hw profile has 'fail_reason' explaining why.
     """
-    sys_ff  = _system_ffmpeg()
-    bnd_ff  = FFMPEG_BIN
-    working = []
-    failed  = []
-    black   = bytes(64 * 64 * 3)   # 64×64 black BGR frame
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    for profile in _ENCODER_PROFILES:
+    sys_ff = _system_ffmpeg()
+    bnd_ff = FFMPEG_BIN
+
+    def _test(profile):
         enc       = profile["name"]
         pixfmt    = profile["pixfmt"]
-        args      = profile["args"](28, 64, 64)
+        psize     = profile.get("probe_size", "256x256")
+        pw, ph    = (int(x) for x in psize.split("x"))
+        args      = profile["args"](28, pw, ph)
         needs_sys = profile.get("requires_hw_ffmpeg", False)
-
         ff = sys_ff if needs_sys else bnd_ff
+
         if ff is None:
             if profile["is_hw"]:
-                failed.append({**profile,
-                    "fail_reason": "system FFmpeg not found — install ffmpeg"})
-            continue
+                return "failed", {**profile,
+                    "fail_reason": f"{enc}: system FFmpeg not found — run: winget install ffmpeg"}
+            return "skip", None
 
+        black = bytes(pw * ph * 3)
         cmd = [
             ff, "-y", "-loglevel", "error",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
-            "-s", "64x64", "-r", "25", "-i", "pipe:0",
-        ]
-        if pixfmt == "nv12":
-            cmd += ["-vf", "format=nv12"]
-        cmd += ["-c:v", enc] + args + ["-pix_fmt", pixfmt,
-                "-frames:v", "1", "-f", "null", "-"]
+            "-s", psize, "-r", "25", "-i", "pipe:0",
+            "-c:v", enc,
+        ] + args + ["-pix_fmt", pixfmt, "-frames:v", "2", "-f", "null", "-"]
 
         try:
-            r = subprocess.run(cmd, input=black, capture_output=True, timeout=12)
+            r = subprocess.run(cmd, input=black, capture_output=True, timeout=15,
+                               **_NO_WINDOW)
             if r.returncode == 0:
                 p = dict(profile)
                 p["ffmpeg_bin"] = ff
-                working.append(p)
+                return "ok", p
             elif profile["is_hw"]:
-                reason = _friendly_hw_error(r.stderr.decode(errors="replace"))
-                failed.append({**profile, "fail_reason": reason})
+                stderr = r.stderr.decode(errors="replace")
+                return "failed", {**profile,
+                    "fail_reason": _friendly_hw_error(enc, stderr),
+                    "stderr_raw": stderr[-500:]}
+            return "skip", None
         except subprocess.TimeoutExpired:
             if profile["is_hw"]:
-                failed.append({**profile, "fail_reason": "probe timed out"})
+                return "failed", {**profile, "fail_reason": f"{enc}: probe timed out"}
+            return "skip", None
         except FileNotFoundError:
-            break   # FFmpeg binary missing entirely
+            return "skip", None
 
+    results = [None] * len(_ENCODER_PROFILES)
+    with ThreadPoolExecutor(max_workers=len(_ENCODER_PROFILES)) as ex:
+        futures = {ex.submit(_test, p): i for i, p in enumerate(_ENCODER_PROFILES)}
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
+
+    working, failed = [], []
+    for item in results:
+        if item is None:
+            continue
+        status, data = item
+        if status == "ok":
+            working.append(data)
+        elif status == "failed" and data:
+            failed.append(data)
     return working, failed
-
 
 # ─────────────────────────────────────────────
 #  FFmpeg pipe writer (runs in background thread)
@@ -351,31 +472,29 @@ class FFmpegWriter:
         info    = self.encoder_info or {}
         enc     = self.encoder
         pixfmt  = info.get("pixfmt", "yuv420p")
-        is_hw   = info.get("is_hw", False)
-        ff      = info.get("ffmpeg_bin", FFMPEG_BIN)  # hw encoders use system FF
+        ff      = info.get("ffmpeg_bin", FFMPEG_BIN)
 
-        args_fn = info.get("args")
+        args_fn  = info.get("args")
         enc_args = args_fn(self.crf, self.width, self.height) if args_fn \
-                   else ["-crf", str(self.crf)]
+                   else ["-crf", str(self.crf), "-threads", "0"]
 
         cmd = [
             ff, "-y",
+            # Increase probe size / thread queues to handle bursty frame delivery
+            "-thread_queue_size", "512",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-s", f"{self.width}x{self.height}",
             "-r", str(self.fps),
             "-i", "pipe:0",
-        ]
-        # QSV needs nv12; insert a pixel-format conversion filter
-        if is_hw and pixfmt == "nv12":
-            cmd += ["-vf", "format=nv12"]
-
-        cmd += ["-c:v", enc] + enc_args + ["-pix_fmt", pixfmt]
+            "-c:v", enc,
+        ] + enc_args + ["-pix_fmt", pixfmt]
         cmd += ["-movflags", "+faststart", self.output_path]
 
         self._proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE   # capture for error reporting
+            stderr=subprocess.PIPE,   # capture for error reporting
+            **_NO_WINDOW
         )
         # Drain stderr in background so it never blocks
         self._stderr_lines: list[str] = []
@@ -385,8 +504,16 @@ class FFmpegWriter:
         if self._proc and self._proc.stderr:
             for line in self._proc.stderr:
                 decoded = line.decode(errors="replace").strip()
-                if decoded:
-                    self._stderr_lines.append(decoded)
+                if not decoded:
+                    continue
+                # Skip normal FFmpeg progress lines — not errors
+                if decoded.startswith("frame=") or decoded.startswith("size="):
+                    continue
+                if decoded.startswith("video:") or decoded.startswith("audio:"):
+                    continue
+                self._stderr_lines.append(decoded)
+                if len(self._stderr_lines) > 200:
+                    self._stderr_lines = self._stderr_lines[-100:]
 
     def last_errors(self, n=5) -> list[str]:
         """Return the last N stderr lines from FFmpeg (for error reporting)."""
@@ -415,7 +542,14 @@ class FFmpegWriter:
                     self._proc.stdin.close()
                 except Exception:
                     pass
-                self._proc.wait(timeout=30)
+                try:
+                    self._proc.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    self._proc.terminate()     # polite kill
+                    try:
+                        self._proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        self._proc.kill()      # force kill
                 self._proc = None
 
     @property
@@ -424,10 +558,228 @@ class FFmpegWriter:
 
 
 # ─────────────────────────────────────────────
-#  Capture thread
+#  Audio device enumeration
 # ─────────────────────────────────────────────
 
-import queue as _queue
+def list_audio_devices(ffmpeg_bin: str) -> list[str]:
+    """
+    Enumerate audio input devices available to FFmpeg.
+    On Windows uses DirectShow (-f dshow -list_devices).
+    Falls back to sounddevice if FFmpeg listing fails.
+    """
+    devices = []
+
+    if sys.platform == "win32":
+        # FFmpeg dshow device listing — use a strict timeout, it can hang
+        cmd = [ffmpeg_bin, "-list_devices", "true",
+               "-f", "dshow", "-i", "dummy",
+               "-loglevel", "debug"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=6, **_NO_WINDOW)
+            # Output is on stderr for dshow
+            output = r.stderr.decode(errors="replace")
+
+            import re
+            # dshow lists audio devices in a block after the audio header.
+            # Different FFmpeg versions format this slightly differently.
+            # Strategy 1: look for lines with "(audio)" marker
+            for line in output.splitlines():
+                if "(audio)" in line.lower():
+                    m = re.search(r'"([^"]+)"', line)
+                    if m:
+                        name = m.group(1)
+                        if name not in devices and name != "dummy":
+                            devices.append(name)
+
+            # Strategy 2: parse the structured block
+            # [dshow @ ...] DirectShow audio devices
+            # [dshow @ ...]  "Device Name"
+            if not devices:
+                in_audio_section = False
+                for line in output.splitlines():
+                    if "DirectShow audio devices" in line:
+                        in_audio_section = True
+                        continue
+                    if in_audio_section:
+                        if "DirectShow video devices" in line:
+                            break
+                        m = re.search(r'"([^"]+)"', line)
+                        if m:
+                            name = m.group(1)
+                            if name not in devices:
+                                devices.append(name)
+        except Exception:
+            pass
+
+    else:
+        # Linux: try pactl
+        try:
+            r = subprocess.run(["pactl", "list", "sources", "short"],
+                               capture_output=True, timeout=5, **_NO_WINDOW)
+            for line in r.stdout.decode().splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    devices.append(parts[1])
+        except Exception:
+            pass
+
+    # Fallback: sounddevice
+    if not devices and _AUDIO_AVAILABLE:
+        try:
+            import sounddevice as _sd
+            for d in _sd.query_devices():
+                if d["max_input_channels"] > 0:
+                    devices.append(d["name"])
+        except Exception:
+            pass
+
+    return devices
+
+
+# ─────────────────────────────────────────────
+#  Per-segment audio recorder
+# ─────────────────────────────────────────────
+
+class AudioRecorder:
+    """
+    Captures audio from a named device into a temp WAV file using FFmpeg.
+    One instance per video segment. When stop() is called, the WAV is
+    muxed into the video file (replacing it) in a background thread.
+    """
+
+    def __init__(self, device_name: str, temp_path: str, ffmpeg_bin: str):
+        self.device_name = device_name
+        self.temp_path   = temp_path   # e.g. /tmp/vhs_audio_001.wav
+        self.ffmpeg_bin  = ffmpeg_bin
+        self._proc: subprocess.Popen | None = None
+
+    def start(self):
+        if sys.platform == "win32":
+            # FFmpeg dshow requires device names in UTF-8 encoding
+            # Handle special characters properly by ensuring proper encoding
+            device_name = self.device_name
+            # Escape any special characters that might interfere with FFmpeg parsing
+            # FFmpeg expects the device name exactly as shown in -list_devices
+            device_arg = f"audio={device_name}"
+            print(f"[AudioRecorder] Starting dshow capture: {device_arg}")
+            cmd = [
+                self.ffmpeg_bin, "-y",
+                "-f", "dshow",
+                "-analyzeduration", "4000000",  # 4s for device probing
+                "-probesize", "4000000",
+                "-i", device_arg,
+                "-f", "s16le", # raw PCM — no header to corrupt on hard kill
+                "-ar", "48000",
+                "-ac", "2",
+                "-thread_queue_size", "2048",
+                self.temp_path, # .pcm extension
+            ]
+        else:
+            cmd = [
+                self.ffmpeg_bin, "-y",
+                "-f", "pulse",
+                "-i", self.device_name,
+                "-f", "s16le",
+                "-ar", "48000",
+                "-ac", "2",
+                self.temp_path,
+            ]
+        # No stdin=PIPE — dshow on Windows ignores stdin 'q'.
+        # We stop with terminate(); raw PCM has no header to corrupt.
+        print(f"[AudioRecorder] Starting FFmpeg: {' '.join(cmd[:10])}...")
+        self._proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, # capture for error reporting
+            **_NO_WINDOW
+        )
+        # Drain stderr and log any errors
+        def _drain_stderr():
+            if self._proc and self._proc.stderr:
+                for line in self._proc.stderr:
+                    decoded = line.decode(errors="replace").strip()
+                    if decoded:
+                        # Look for actual errors
+                        if any(err in decoded.lower() for err in ["error", "fail", "cannot", "invalid"]):
+                            print(f"[AudioRecorder STDERR] {decoded}")
+        threading.Thread(target=_drain_stderr, daemon=True, name="audio-stderr").start()
+
+    def stop_and_mux(self, video_path: str, on_done=None, on_error=None):
+        """
+        Stop audio capture, then mux audio+video into the final file.
+        Runs in a background thread so it never blocks the capture loop.
+        video_path is the completed video-only file — replaced by muxed output.
+        """
+        def _work():
+            # Stop audio capture — hard-kill is fine for raw PCM (no header to corrupt)
+            if self._proc:
+                try:
+                    self._proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    self._proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+                    self._proc.wait(timeout=2)
+                self._proc = None
+
+            # Give the OS a moment to flush file buffers to disk
+            time.sleep(0.5)
+
+            # Check PCM file exists and has content
+            # Raw s16le: 48000 samples * 2 ch * 2 bytes = 192000 bytes/sec
+            pcm = Path(self.temp_path)
+            if not pcm.exists() or pcm.stat().st_size < 20480:
+                if on_error:
+                    on_error("Audio file empty or missing — saved video only")
+                pcm.unlink(missing_ok=True)
+                return
+
+            # Mux: video + audio → temp output, then replace original
+            vpath   = Path(video_path)
+            out_tmp = vpath.with_suffix(".mux_tmp" + vpath.suffix)
+            # -movflags +faststart is MP4-only; skip for MKV
+            is_mp4  = vpath.suffix.lower() == ".mp4"
+            cmd = [
+                self.ffmpeg_bin, "-y",
+                "-i", video_path,
+                # Read raw PCM with explicit format/rate/channels
+                "-f", "s16le", "-ar", "48000", "-ac", "2",
+                "-i", str(pcm),
+                "-c:v", "copy",        # video stream: zero re-encode
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-shortest",           # trim to shorter of video/audio
+            ]
+            if is_mp4:
+                cmd += ["-movflags", "+faststart"]
+            cmd.append(str(out_tmp))
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=180, **_NO_WINDOW)
+                if r.returncode == 0 and out_tmp.exists():
+                    out_tmp.replace(vpath)   # atomic replace
+                    if on_done:
+                        on_done()
+                else:
+                    err = r.stderr.decode(errors="replace")[-400:]
+                    if on_error:
+                        on_error(f"Mux failed (rc={r.returncode}): {err}")
+                    out_tmp.unlink(missing_ok=True)
+            except Exception as e:
+                if on_error:
+                    on_error(str(e))
+                out_tmp.unlink(missing_ok=True)
+            finally:
+                pcm.unlink(missing_ok=True)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+
+
+# ─────────────────────────────────────────────
+#  Capture thread
+# ─────────────────────────────────────────────
 
 # Preview is throttled to this many fps to keep the UI thread free.
 _PREVIEW_FPS = 25
@@ -518,14 +870,15 @@ class CaptureThread(QThread):
         self._recording = False
         self._segment_index = 0
         self._start_time = 0.0
-        self._blue_frames = 0
         self._in_blue = False
-        self._blue_hold_frames = 0
+        self._last_audio_val = 0.0   # updated by UI thread via set_audio_level()
         self._mutex = QMutex()
         self._writer_thread = _WriterThread(
             on_error=lambda errs: self.error.emit("FFmpeg: " + errs[-1])
         )
         self._writer_thread.start()
+        self._audio_recorder: AudioRecorder | None = None
+        self._current_video_path: str = ""
 
     def start_recording(self):
         with QMutexLocker(self._mutex):
@@ -537,25 +890,64 @@ class CaptureThread(QThread):
     def stop_recording(self):
         with QMutexLocker(self._mutex):
             self._recording = False
+        # Clean up audio recorder first to ensure orderly shutdown
+        if self._audio_recorder:
+            prev_audio, self._audio_recorder = self._audio_recorder, None
+            prev_audio.stop_and_mux(
+                self._current_video_path,
+                on_done=lambda:None,  # already signaling on stop
+                on_error=self.error.emit,
+            )
         self._writer_thread.set_writer(None)
+        self._finish_audio_segment(self._current_video_path)
 
     def manual_split(self):
+        # Do NOT hold the mutex while calling _start_new_segment —
+        # it emits a signal which can reenter from the UI thread.
         with QMutexLocker(self._mutex):
-            if self._recording:
-                self._start_new_segment()
+            if not self._recording:
+                return
+        self._start_new_segment()
+
+    def set_audio_level(self, val: float):
+        """Called from UI thread; float read in capture thread is atomic on CPython."""
+        self._last_audio_val = val
+
+    def _finish_audio_segment(self, video_path: str):
+        """Stop current audio recorder and mux into the video file."""
+        ar = self._audio_recorder
+        self._audio_recorder = None
+        if ar and video_path:
+            ar.stop_and_mux(
+                video_path,
+                on_done=lambda: self.segment_split.emit(video_path + ":muxed", 0.0),
+                on_error=lambda e: self.error.emit(f"Audio mux: {e}"),
+            )
 
     def _start_new_segment(self):
         cfg = self.cfg
         out_dir = Path(cfg["output_dir"])
         out_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ext = "mp4" if cfg["encoder"] in ("libsvtav1", "libaom-av1", "libx265", "libx264") else "mkv"
+        _MP4_ENCODERS = {
+            "libsvtav1", "libaom-av1", "libx265", "libx264",
+            "av1_nvenc", "hevc_nvenc", "h264_nvenc",
+            "av1_qsv",   "hevc_qsv",   "h264_qsv",
+        }
+        ext = "mp4" if cfg["encoder"] in _MP4_ENCODERS else "mkv"
         title  = cfg.get("title_prefix", "").strip()
         part   = cfg.get("part_prefix", "").strip()
         clip_n = f"clip{self._segment_index+1:02d}"
         parts  = [p for p in [title, part, clip_n, ts] if p]
         fname  = out_dir / f"{'_'.join(parts)}.{ext}"
         self._segment_index += 1
+
+        # Finish previous audio segment before starting writer for new one
+        prev_video = self._current_video_path
+        self._current_video_path = str(fname)
+        self._finish_audio_segment(prev_video)
+
+        # Start video writer
         w = FFmpegWriter(
             str(fname),
             cfg["width"], cfg["height"], cfg["fps"],
@@ -564,6 +956,17 @@ class CaptureThread(QThread):
         )
         w.start()
         self._writer_thread.set_writer(w)
+
+        # Start audio recorder if configured
+        audio_dev = cfg.get("audio_device", "")
+        ff = cfg.get("encoder_info", {}).get("ffmpeg_bin", FFMPEG_BIN) or FFMPEG_BIN
+        sys_ff = _system_ffmpeg() or FFMPEG_BIN
+        if audio_dev:
+            tmp_pcm = str(out_dir / f".audio_tmp_{self._segment_index:03d}.pcm")
+            ar = AudioRecorder(audio_dev, tmp_pcm, sys_ff)
+            ar.start()
+            self._audio_recorder = ar
+
         elapsed = time.time() - self._start_time if self._start_time else 0.0
         self.segment_split.emit(str(fname), elapsed)
 
@@ -588,11 +991,21 @@ class CaptureThread(QThread):
         last_timecode = 0.0
         frame_count   = 0
 
+        # Snapshot all hot-loop config values so the tight loop never touches
+        # the shared cfg dict (which the UI thread can update via cfg.update()).
+        # Re-snapshot at each new segment start via _refresh_loop_cfg().
+        def _snapshot_cfg():
+            return {
+                "blue_threshold":  cfg["blue_threshold"],
+                "min_blue_secs":   cfg["min_blue_seconds"],
+                "auto_split":      cfg.get("auto_split", True),
+            }
+        loop = _snapshot_cfg()
+
         # Time-based blue detection state (seconds, not frames)
-        blue_start_time: float | None = None   # when continuous blue began
-        resume_start_time: float | None = None # when non-blue after blue began
-        MIN_BLUE_SECS    = cfg["min_blue_seconds"]
-        HYSTERESIS_SECS  = 0.5   # must be non-blue for 0.5s before resuming
+        blue_start_time: float | None = None
+        resume_start_time: float | None = None
+        HYSTERESIS_SECS = 0.5
 
         while self._running:
             ret, frame = cap.read()
@@ -607,39 +1020,50 @@ class CaptureThread(QThread):
             if now - last_preview >= preview_interval:
                 last_preview = now
                 preview = cv2.resize(frame, (640, 360),
-                                     interpolation=cv2.INTER_LINEAR)
+                                     interpolation=cv2.INTER_NEAREST)
+                # Draw overlay on capture thread so UI thread just blits
+                if self._recording:
+                    audio_val = self._last_audio_val
+                    bar_h = max(2, int(audio_val * 40))
+                    bar_w = 8
+                    pw, ph = 640, 360
+                    x = pw - bar_w - 10
+                    y_bot = ph - 10
+                    cv2.rectangle(preview, (x, y_bot - 40), (x + bar_w, y_bot),
+                                  (40, 40, 40), -1)
+                    colour = (0, 200, 40) if audio_val < 0.7 else \
+                             (0, 200, 200) if audio_val < 0.9 else (0, 40, 220)
+                    cv2.rectangle(preview, (x, y_bot - bar_h), (x + bar_w, y_bot),
+                                  colour, -1)
+                    cv2.circle(preview, (14, 14), 6, (0, 0, 200), -1)  # REC dot BGR=red
                 self.frame_ready.emit(preview)
 
             # ── Blue detection (every Nth frame) ────────────
             if frame_count % _DETECT_EVERY_N == 0:
-                ratio      = analyse_blue_ratio(frame)
-                is_blue_now = ratio >= cfg["blue_threshold"]
-                auto_split  = cfg.get("auto_split", True)
+                ratio       = analyse_blue_ratio(frame)
+                is_blue_now = ratio >= loop["blue_threshold"]
+                auto_split  = loop["auto_split"]
+                min_blue    = loop["min_blue_secs"]
 
                 if is_blue_now:
-                    resume_start_time = None          # reset resume timer
+                    resume_start_time = None
                     if blue_start_time is None:
-                        blue_start_time = now         # start blue timer
+                        blue_start_time = now
 
-                    blue_secs = now - blue_start_time
-                    if blue_secs >= MIN_BLUE_SECS and not self._in_blue:
-                        # Blue screen confirmed
+                    if now - blue_start_time >= min_blue and not self._in_blue:
                         self._in_blue = True
                         self.blue_changed.emit(True, ratio)
                         if auto_split:
                             with QMutexLocker(self._mutex):
                                 if self._recording:
-                                    # Close current clip; new one starts on resume
                                     self._writer_thread.set_writer(None)
                 else:
-                    blue_start_time = None            # reset blue timer
+                    blue_start_time = None
 
                     if self._in_blue:
-                        # We were in blue — start counting resume time
                         if resume_start_time is None:
                             resume_start_time = now
                         elif now - resume_start_time >= HYSTERESIS_SECS:
-                            # Content has genuinely resumed
                             self._in_blue = False
                             resume_start_time = None
                             self.blue_changed.emit(False, ratio)
@@ -647,6 +1071,8 @@ class CaptureThread(QThread):
                                 with QMutexLocker(self._mutex):
                                     if self._recording:
                                         self._start_new_segment()
+                                # Re-snapshot cfg in case encoder/quality changed
+                                loop = _snapshot_cfg()
 
             # ── Write frame to encoder queue ─────────────────
             with QMutexLocker(self._mutex):
@@ -893,11 +1319,21 @@ def _card(parent=None) -> QFrame:
 #  Main window
 # ─────────────────────────────────────────────
 
+class _AudioScanner(QThread):
+    """Scans for audio devices in a background thread and emits results safely."""
+    done = pyqtSignal(list)
+
+    def run(self):
+        ff = _system_ffmpeg() or FFMPEG_BIN
+        devs = list_audio_devices(ff)
+        self.done.emit(devs)
+
+
 class VHSCapture(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VHS Capture")
-        self.setMinimumSize(1180, 740)
+        self.setMinimumSize(900, 580)
         self._capture: CaptureThread | None = None
         self._audio_meter: AudioMeterThread | None = None
         self._recording = False
@@ -918,6 +1354,7 @@ class VHSCapture(QMainWindow):
         self._restore_settings(cfg)
         self._apply_windows_theme()
 
+        self._log_event("info", "VHS Capture v0.2", "ready")
         if _RUST_AVAILABLE:
             self._log_event("info", "vhs_core (Rust) loaded",
                             "blue detection + BGR→RGB + FrameQueue active")
@@ -928,20 +1365,26 @@ class VHSCapture(QMainWindow):
             self._log_event("stop", "sounddevice not found",
                             "pip install sounddevice  (audio meter disabled)")
 
-        # FFmpeg availability
-        bundled = FFMPEG_BIN != "ffmpeg"
-        try:
-            r = subprocess.run([FFMPEG_BIN, "-version"], capture_output=True, timeout=5)
-            ff_ok = r.returncode == 0
-        except Exception:
-            ff_ok = False
-        if ff_ok:
-            self._log_event("info",
-                            f"FFmpeg found {'(bundled)' if bundled else '(on PATH)'}",
-                            FFMPEG_BIN)
+        # Log FFmpeg status immediately so user knows what encoding options to expect
+        sys_ff = _system_ffmpeg()
+        if sys_ff:
+            self._log_event("info", f"System FFmpeg found", sys_ff)
         else:
-            self._log_event("stop", "FFmpeg not found",
-                            "recording will fail — install FFmpeg or run build_windows.bat")
+            self._log_event("stop", "System FFmpeg not found",
+                            "GPU encoding (NVENC/QSV) unavailable — run: winget install ffmpeg")
+
+        # Warn if even the bundled/PATH ffmpeg is broken (nothing will record)
+        if FFMPEG_BIN != (sys_ff or "ffmpeg"):
+            # We're using a bundled binary — verify it works
+            try:
+                r = subprocess.run([FFMPEG_BIN, "-version"],
+                                   capture_output=True, timeout=5, **_NO_WINDOW)
+                if r.returncode != 0:
+                    self._log_event("stop", "Bundled FFmpeg broken",
+                                    "recording will fail — run build_windows.bat")
+            except Exception:
+                self._log_event("stop", "FFmpeg not found",
+                                "recording will fail — install FFmpeg or run build_windows.bat")
 
     # ── Reusable widget builders ─────────────
 
@@ -1059,13 +1502,16 @@ class VHSCapture(QMainWindow):
         preview_stack.setContentsMargins(0, 0, 0, 0)
         preview_stack.setSpacing(0)
 
-        # The actual preview area (relative positioning via overlay widget)
+        # The actual preview area — expands to fill available space
         self.preview_label = QLabel()
-        self.preview_label.setFixedHeight(360)
+        self.preview_label.setMinimumHeight(180)
+        self.preview_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setStyleSheet("background:#000;border-radius:10px")
         self.preview_label.setText(f'<span style="color:{MUTED};font-size:14px">No camera — click Open camera</span>')
-        preview_stack.addWidget(self.preview_label)
+        preview_stack.addWidget(self.preview_label, 1)
 
         # Badge overlay row (inside preview bottom)
         overlay_row = QHBoxLayout()
@@ -1087,7 +1533,7 @@ class VHSCapture(QMainWindow):
         )
         overlay_row.addWidget(self.lbl_timecode)
         preview_stack.addLayout(overlay_row)
-        left.addWidget(preview_card)
+        left.addWidget(preview_card, 1)  # stretch=1 so preview grows with window
 
         # Blue ratio meter + audio meter row
         meters_row = QHBoxLayout()
@@ -1162,9 +1608,18 @@ class VHSCapture(QMainWindow):
 
         root.addLayout(left, 3)
 
-        # ── RIGHT COLUMN ─────────────────────
-        right = QVBoxLayout()
+        # ── RIGHT COLUMN (in a scroll area so small windows don't clip content) ───────
+        right_widget = QWidget()
+        right = QVBoxLayout(right_widget)
         right.setSpacing(10)
+        right.setContentsMargins(0, 0, 0, 0)
+
+        right_scroll = QScrollArea()
+        right_scroll.setWidget(right_widget)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setStyleSheet("QScrollArea{background:transparent;border:none}")
 
         # Output dir + filename prefix
         out_card, out_lay = self._section("OUTPUT")
@@ -1173,25 +1628,19 @@ class VHSCapture(QMainWindow):
         self.lbl_outdir.setStyleSheet(f"color:{TEXT};font-size:12px")
         self.lbl_outdir.setWordWrap(True)
         btn_dir = self._make_btn("Browse…")
-        btn_dir.setFixedWidth(76)
+        btn_dir.setFixedWidth(90)
         btn_dir.clicked.connect(self._pick_dir)
         dir_row.addWidget(self.lbl_outdir, 1)
         dir_row.addWidget(btn_dir)
         out_lay.addLayout(dir_row)
 
-        FIELD_STYLE = (
-            f"background:{BG};border:1px solid {BORDER};border-radius:6px;"
-            f"color:{TEXT};font-size:13px;padding:3px 8px"
-        )
         self.edit_title = QLineEdit()
         self.edit_title.setPlaceholderText("e.g. Summer1994")
-        self.edit_title.setStyleSheet(FIELD_STYLE)
         self.edit_title.setFixedHeight(30)
         out_lay.addLayout(self._settings_row("Title prefix:", self.edit_title))
 
         self.edit_part = QLineEdit()
         self.edit_part.setPlaceholderText("e.g. TapeA  or  Side1")
-        self.edit_part.setStyleSheet(FIELD_STYLE)
         self.edit_part.setFixedHeight(30)
         out_lay.addLayout(self._settings_row("Part prefix:", self.edit_part))
 
@@ -1208,7 +1657,7 @@ class VHSCapture(QMainWindow):
         self.edit_title.textChanged.connect(_update_preview)
         self.edit_part.textChanged.connect(_update_preview)
 
-        right.addWidget(out_card)
+        # (out_card added after tape timer — set once and forget)
 
         # Capture settings
         cap_card, cap_lay = self._section("CAPTURE SETTINGS")
@@ -1221,18 +1670,41 @@ class VHSCapture(QMainWindow):
         self.spin_fps = QSpinBox(); self.spin_fps.setRange(10, 60); self.spin_fps.setValue(25)
         cap_lay.addLayout(self._settings_row("FPS:", self.spin_fps))
 
+        # Audio device
+        self.combo_audio = QComboBox()
+        self.combo_audio.addItem("Scanning…")
+        self.combo_audio.setEnabled(False)
+        self._audio_devices = []
+        audio_row = QHBoxLayout()
+        audio_lbl = QLabel("Audio device:")
+        audio_lbl.setStyleSheet(f"color:{MUTED};font-size:13px;min-width:120px")
+        btn_audio_refresh = self._make_btn("Rescan")
+        btn_audio_refresh.setFixedWidth(60)
+        btn_audio_refresh.setFixedHeight(30)
+        btn_audio_refresh.clicked.connect(self._rescan_audio)
+        audio_row.addWidget(audio_lbl)
+        audio_row.addWidget(self.combo_audio, 1)
+        audio_row.addWidget(btn_audio_refresh)
+        cap_lay.addLayout(audio_row)
+        self._audio_scanner: _AudioScanner | None = None
+        self._rescan_audio()   # kick off initial scan
+
         self.combo_enc = QComboBox()
         self.combo_enc.addItem("Scanning encoders…")
         self.combo_enc.setEnabled(False)
         cap_lay.addLayout(self._settings_row("Encoder:", self.combo_enc))
         self._encoder_list: list[dict] = []
-        # Probe encoders in background so the window opens instantly
-        def _probe_bg():
-            working, failed = probe_encoders()
-            self._encoder_list = working
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._populate_encoders(working, failed))
-        threading.Thread(target=_probe_bg, daemon=True).start()
+        self._encoders_ready = pyqtSignal(list, list)  # can't use here directly
+        # Use a one-shot signal object on a helper to safely cross thread boundary
+        class _EncoderSignal(QThread):
+            done = pyqtSignal(list, list)
+            def run(self_inner):
+                working, failed = probe_encoders()
+                self._encoder_list = working
+                self_inner.done.emit(working, failed)
+        self._enc_probe = _EncoderSignal()
+        self._enc_probe.done.connect(self._populate_encoders)
+        self._enc_probe.start()
         right.addWidget(cap_card)
 
         # Quality slider with named presets
@@ -1263,6 +1735,63 @@ class VHSCapture(QMainWindow):
         det_lay.addWidget(self.chk_auto_split)
         right.addWidget(det_card)
 
+        # Tape timer
+        timer_card, timer_lay = self._section("TAPE TIMER")
+        self.chk_tape_timer = QCheckBox("Auto-stop after tape length")
+        self.chk_tape_timer.setChecked(False)
+        self.chk_tape_timer.setStyleSheet(f"color:{MUTED};font-size:13px")
+        timer_lay.addWidget(self.chk_tape_timer)
+
+        # Common tape lengths as quick-pick buttons
+        presets_row = QHBoxLayout()
+        presets_row.setSpacing(6)
+        TAPE_STYLE = (
+            f"QPushButton{{font-size:12px;border:1px solid {BORDER};"
+            f"border-radius:6px;padding:4px 10px;background:transparent;color:{MUTED}}}"
+            f"QPushButton:hover{{background:{SURFACE};color:{TEXT}}}"
+            f"QPushButton:checked{{background:{BLUE_BG};color:{BLUE};border-color:{BLUE}}}"
+        )
+        self._tape_preset_btns = []
+        for label, mins in [("30m", 30), ("45m", 45), ("60m", 60), ("90m", 90), ("120m", 120)]:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setStyleSheet(TAPE_STYLE)
+            b.setFixedHeight(28)
+            b.clicked.connect(lambda _, m=mins: self._set_tape_minutes(m))
+            presets_row.addWidget(b)
+            self._tape_preset_btns.append((b, mins))
+        timer_lay.addLayout(presets_row)
+
+        # Custom duration row
+        custom_row = QHBoxLayout()
+        custom_lbl = QLabel("Custom (min):")
+        custom_lbl.setStyleSheet(f"color:{MUTED};font-size:13px;min-width:100px")
+        self.spin_tape_mins = QSpinBox()
+        self.spin_tape_mins.setRange(1, 360)
+        self.spin_tape_mins.setValue(60)
+        self.spin_tape_mins.setSuffix(" min")
+        INPUT_STYLE = (
+            f"background:{BG};border:1px solid {BORDER};border-radius:6px;"
+            f"color:{TEXT};font-size:13px;padding:3px 8px"
+        )
+        self.spin_tape_mins.setStyleSheet(INPUT_STYLE)
+        self.spin_tape_mins.setFixedHeight(30)
+        self.spin_tape_mins.valueChanged.connect(self._sync_tape_preset_btns)
+        custom_row.addWidget(custom_lbl)
+        custom_row.addWidget(self.spin_tape_mins)
+        custom_row.addStretch()
+        timer_lay.addLayout(custom_row)
+
+        # Remaining time display
+        self.lbl_tape_remaining = QLabel("—")
+        self.lbl_tape_remaining.setStyleSheet(
+            f"color:{MUTED};font-size:12px;font-family:monospace")
+        timer_lay.addWidget(self.lbl_tape_remaining)
+        right.addWidget(timer_card)
+
+        # Output dir + filename prefix (set-once section, lives below recording controls)
+        right.addWidget(out_card)
+
         # Clips list
         clips_card, clips_lay = self._section("SAVED CLIPS")
         self.clips_list = QListWidget()
@@ -1291,8 +1820,9 @@ class VHSCapture(QMainWindow):
         )
         log_lay.addWidget(self.log_view)
         right.addWidget(log_card, 1)
+        right.addStretch(0)
 
-        root.addLayout(right, 2)
+        root.addWidget(right_scroll, 2)
 
     # ── Settings persistence ──────────────────
 
@@ -1325,18 +1855,64 @@ class VHSCapture(QMainWindow):
         hw_working = [e for e in working if e["is_hw"]]
         sw_working = [e for e in working if not e["is_hw"]]
         if hw_working:
+            best = hw_working[0]
             self._log_event("info",
-                f"GPU encoders ready: {', '.join(e['name'] for e in hw_working)}", "")
+                f"GPU encoding active: {best['label']}",
+                f"{len(hw_working)} GPU encoder(s) available — using {best['name']}")
         else:
             self._log_event("info", "No GPU encoders available", "using CPU encoding")
         if sw_working:
             self._log_event("info",
                 f"CPU encoders: {', '.join(e['name'] for e in sw_working)}", "")
 
-        # Log why each hw encoder failed
+        # Only log hw encoder failures if no GPU encoding is available at all,
+        # or if the failure is for a different vendor than what's working.
+        # (Don't spam QSV errors when NVENC is already working fine.)
+        working_names = {e["name"] for e in working}
+        has_nvenc = any("nvenc" in n for n in working_names)
+        has_qsv   = any("qsv"   in n for n in working_names)
         for e in failed:
+            enc = e["name"]
+            # Suppress QSV noise when NVENC works, and vice versa
+            if "qsv"   in enc and has_nvenc:
+                continue
+            if "nvenc" in enc and has_qsv:
+                continue
             self._log_event("stop",
-                f"{e['name']} unavailable", e.get("fail_reason", ""))
+                f"{enc} unavailable", e.get("fail_reason", ""))
+
+    def _populate_audio_devices(self, devices: list[str]):
+        self.combo_audio.clear()
+        self.combo_audio.addItem("No audio")
+        for d in devices:
+            self.combo_audio.addItem(d)
+        self.combo_audio.setEnabled(True)
+        # Auto-select if only one device or if saved pref matches
+        saved = load_settings().get("audio_device", "")
+        if saved:
+            for i in range(self.combo_audio.count()):
+                if self.combo_audio.itemText(i) == saved:
+                    self.combo_audio.setCurrentIndex(i)
+                    break
+        elif len(devices) == 1:
+            self.combo_audio.setCurrentIndex(1)
+        if devices:
+            self._log_event("info", f"Audio devices found: {', '.join(devices)}", "")
+        else:
+            self._log_event("stop", "No audio devices found",
+                            "check FFmpeg dshow support")
+
+    def _rescan_audio(self):
+        self.combo_audio.clear()
+        self.combo_audio.addItem("Scanning…")
+        self.combo_audio.setEnabled(False)
+        # Stop any previous scan
+        if self._audio_scanner and self._audio_scanner.isRunning():
+            self._audio_scanner.quit()
+            self._audio_scanner.wait(1000)
+        self._audio_scanner = _AudioScanner()
+        self._audio_scanner.done.connect(self._populate_audio_devices)
+        self._audio_scanner.start()
 
     def _restore_settings(self, cfg: dict):
         self.lbl_outdir.setText(self._output_dir)
@@ -1350,6 +1926,10 @@ class VHSCapture(QMainWindow):
         self.sl_thresh.setValue(cfg.get("blue_threshold_pct", 60))
         self.sl_mindur.setValue(cfg.get("min_blue_dur", 15))
         self.chk_auto_split.setChecked(cfg.get("auto_split", True))
+        self.chk_tape_timer.setChecked(cfg.get("tape_timer_enabled", False))
+        self.spin_tape_mins.setValue(cfg.get("tape_timer_mins", 60))
+        self._sync_tape_preset_btns(cfg.get("tape_timer_mins", 60))
+        # Audio device restored in _populate_audio_devices once scan finishes
 
     def _selected_encoder_info(self) -> dict | None:
         idx = self.combo_enc.currentIndex()
@@ -1371,6 +1951,10 @@ class VHSCapture(QMainWindow):
             "blue_threshold_pct": self.sl_thresh.value(),
             "min_blue_dur":       self.sl_mindur.value(),
             "auto_split":         self.chk_auto_split.isChecked(),
+            "tape_timer_enabled": self.chk_tape_timer.isChecked(),
+            "tape_timer_mins":    self.spin_tape_mins.value(),
+            "audio_device":       "" if self.combo_audio.currentIndex() == 0
+                                  else self.combo_audio.currentText(),
         }
 
     def _save_settings(self):
@@ -1446,6 +2030,8 @@ class VHSCapture(QMainWindow):
             self._audio_meter.level.connect(
                 lambda v: self.audio_bar.setValue(int(v * 100))
             )
+            if self._capture:
+                self._audio_meter.level.connect(self._capture.set_audio_level)
             self._audio_meter.start()
 
         self.btn_rec.setEnabled(True)
@@ -1476,6 +2062,8 @@ class VHSCapture(QMainWindow):
             "output_dir":       self._output_dir,
             "title_prefix":     self.edit_title.text().strip(),
             "part_prefix":      self.edit_part.text().strip(),
+            "audio_device":     "" if self.combo_audio.currentIndex() == 0
+                                else self.combo_audio.currentText(),
         }
 
     # ── Recording ────────────────────────────
@@ -1494,8 +2082,7 @@ class VHSCapture(QMainWindow):
         self._capture.start_recording()
         self._recording = True
         self._seg_count = 0
-        self._clips = []
-        self.stat_clips.setText("0")
+        self.stat_clips.setText(str(len(self._clips)))
         self.stat_splits.setText("0")
         self.btn_rec.setText("⏹  Stop recording")
         self.btn_rec.setStyleSheet(
@@ -1521,8 +2108,15 @@ class VHSCapture(QMainWindow):
         )
         self.btn_split.setEnabled(False)
         self.badge_rec.setVisible(False)
+        self.badge_blue.setVisible(False)
         self.badge_idle.setVisible(True)
         self.badge_idle.setText("● Idle")
+        self.blue_bar.setValue(0)
+        self.blue_bar.setStyleSheet(
+            f"QProgressBar{{background:{BORDER};border-radius:3px;border:none}}"
+            f"QProgressBar::chunk{{background:{BLUE};border-radius:3px}}"
+        )
+        self.lbl_tape_remaining.setText("—")
         self._log_event("stop", "Recording stopped",
                         f"{self._seg_count} blue screen splits · {len(self._clips)} clips")
 
@@ -1534,27 +2128,8 @@ class VHSCapture(QMainWindow):
     # ── Signals ──────────────────────────────
 
     def _on_frame(self, frame: np.ndarray):
-        # frame is already 640×360 BGR from capture thread
+        # Overlay is already drawn on the capture thread before emit.
         h, w = frame.shape[:2]
-
-        # Draw waveform overlay when recording
-        if self._recording:
-            frame = frame.copy()
-            audio_val = self.audio_bar.value() / 100.0
-            bar_h = max(2, int(audio_val * 40))
-            bar_w = 8
-            x = w - bar_w - 10
-            y_top = h - 10 - bar_h
-            # Background track
-            cv2.rectangle(frame, (x, h - 10 - 40), (x + bar_w, h - 10),
-                          (40, 40, 40), -1)
-            # Level bar — green, yellow, red by level
-            colour = (40, 200, 40) if audio_val < 0.7 else \
-                     (40, 200, 200) if audio_val < 0.9 else (40, 40, 220)
-            cv2.rectangle(frame, (x, y_top), (x + bar_w, h - 10), colour, -1)
-            # REC dot
-            cv2.circle(frame, (14, 14), 6, (40, 40, 220), -1)
-
         if _RUST_AVAILABLE:
             raw = _vhs_core.bgr_to_rgb(frame.tobytes())
             img = QImage(raw, w, h, w * 3, QImage.Format.Format_RGB888).copy()
@@ -1591,11 +2166,23 @@ class VHSCapture(QMainWindow):
             self._log_event("resume", "Content resumed", "new segment started")
 
     def _on_segment_split(self, path: str, elapsed: float):
+        # Handle audio device tracking
+        if path.endswith(":audio:"):
+            device = path.split(":audio:", 1)[1]
+            self._log_event("info", "Audio capture started", f"device: {device}")
+            return
+
+        # Audio mux completion signal
+        if path.endswith(":muxed"):
+            real = path[:-6]
+            self._log_event("info", "Audio muxed", Path(real).name)
+            return
+
+        # Normal segment split
         self._clips.append(path)
         self.stat_clips.setText(str(len(self._clips)))
         name = Path(path).name
         self._log_event("split", f"New segment: {name}", f"t={elapsed:.1f}s")
-        # Add to clips list widget
         item = QListWidgetItem(f"  {len(self._clips):02d}  {name}")
         item.setData(Qt.ItemDataRole.UserRole, path)
         item.setToolTip(path)
@@ -1607,17 +2194,42 @@ class VHSCapture(QMainWindow):
         folder = str(Path(path).parent)
         if sys.platform == "win32":
             # Open Explorer and select the file
-            subprocess.Popen(["explorer", "/select,", path.replace("/", "\\")])
+            subprocess.Popen(["explorer", "/select,", path.replace("/", "\\")],
+                             **_NO_WINDOW)
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", path])
         else:
             subprocess.Popen(["xdg-open", folder])
 
+    def _set_tape_minutes(self, mins: int):
+        self.spin_tape_mins.setValue(mins)
+        self._sync_tape_preset_btns(mins)
+        self.chk_tape_timer.setChecked(True)
+
+    def _sync_tape_preset_btns(self, mins: int):
+        for btn, bm in self._tape_preset_btns:
+            btn.setChecked(bm == mins)
+
     def _on_timecode(self, elapsed: float):
         td = timedelta(seconds=int(elapsed))
-        s = str(td)
+        s  = str(td)
         self.lbl_timecode.setText(s)
         self.stat_time.setText(s)
+
+        # Tape timer
+        if self._recording and self.chk_tape_timer.isChecked():
+            limit   = self.spin_tape_mins.value() * 60
+            remain  = max(0, limit - int(elapsed))
+            rem_str = str(timedelta(seconds=remain))
+            self.lbl_tape_remaining.setText(
+                f"⏱  {rem_str} remaining of {self.spin_tape_mins.value()}min"
+            )
+            if remain == 0:
+                self._log_event("stop", "Tape timer reached",
+                                f"{self.spin_tape_mins.value()}min — stopping")
+                self._stop_recording()
+        else:
+            self.lbl_tape_remaining.setText("—")
 
     def _on_error(self, msg: str):
         self._log_event("error", "Error", msg)
@@ -1632,7 +2244,17 @@ class VHSCapture(QMainWindow):
 
     def _log_event(self, kind: str, msg: str, detail: str = ""):
         self._log.add(kind, msg, detail)
-        self.log_view.setHtml(self._log.format_html())
+        # Append one line instead of rebuilding the whole HTML each time
+        colours = {
+            "info": "#378add", "blue": "#5b9bd5", "resume": "#639922",
+            "split": "#ba7517", "error": "#e24b4a", "rec": "#3b6d11", "stop": "#888780",
+        }
+        ts  = datetime.now().strftime("%H:%M:%S")
+        col = colours.get(kind, "#888")
+        det = f" <span style='color:#888'>{detail}</span>" if detail else ""
+        html = (f"<span style='color:#888'>[{ts}]</span> "
+                f"<span style='color:{col};font-weight:bold'>{msg}</span>{det}")
+        self.log_view.append(html)
         self.log_view.moveCursor(QTextCursor.MoveOperation.End)
 
     def closeEvent(self, event):

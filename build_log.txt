@@ -1,15 +1,10 @@
-Build started 2026-07-06 16:55:24,90 
+Build started 2026-07-15 13:06:31,39 
 Requirement already satisfied: maturin in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (1.14.1)
 Requirement already satisfied: PyQt6 in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (6.11.0)
-Requirement already satisfied: opencv-python in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (4.13.0.92)
-Collecting opencv-python
-  Downloading opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl.metadata (20 kB)
-Requirement already satisfied: numpy in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (2.5.0)
-Collecting numpy
-  Downloading numpy-2.5.1-cp312-cp312-win_amd64.whl.metadata (6.6 kB)
+Requirement already satisfied: opencv-python in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (5.0.0.93)
+Requirement already satisfied: numpy in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (2.5.1)
 Requirement already satisfied: sounddevice in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (0.5.5)
-Collecting imageio-ffmpeg
-  Downloading imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl.metadata (1.5 kB)
+Requirement already satisfied: imageio-ffmpeg in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (0.6.0)
 Requirement already satisfied: pyinstaller in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (6.21.0)
 Requirement already satisfied: PyQt6-sip<14,>=13.8 in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (from PyQt6) (13.11.1)
 Requirement already satisfied: PyQt6-Qt6<6.12.0,>=6.11.0 in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (from PyQt6) (6.11.1)
@@ -21,20 +16,116 @@ Requirement already satisfied: pyinstaller-hooks-contrib>=2026.6 in C:\Users\Jaw
 Requirement already satisfied: pywin32-ctypes>=0.2.1 in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (from pyinstaller) (0.2.3)
 Requirement already satisfied: setuptools>=42.0.0 in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (from pyinstaller) (82.0.1)
 Requirement already satisfied: pycparser in C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages (from cffi->sounddevice) (3.0)
-Downloading opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl (44.0 MB)
-   ---------------------------------------- 44.0/44.0 MB 62.2 MB/s  0:00:00
-Downloading numpy-2.5.1-cp312-cp312-win_amd64.whl (12.4 MB)
-   ---------------------------------------- 12.4/12.4 MB 59.9 MB/s  0:00:00
-Downloading imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl (31.2 MB)
-   ---------------------------------------- 31.2/31.2 MB 66.1 MB/s  0:00:00
-Installing collected packages: numpy, imageio-ffmpeg, opencv-python
-  Attempting uninstall: numpy
-    Found existing installation: numpy 2.5.0
-    Uninstalling numpy-2.5.0:
-      Successfully uninstalled numpy-2.5.0
-  Attempting uninstall: opencv-python
-    Found existing installation: opencv-python 4.13.0.92
-    Uninstalling opencv-python-4.13.0.92:
-      Successfully uninstalled opencv-python-4.13.0.92
-
-Successfully installed imageio-ffmpeg-0.6.0 numpy-2.5.1 opencv-python-5.0.0.93
+🐍 Found CPython 3.12 at C:\Users\Jawarens\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe
+🔗 Found pyo3 bindings
+📡 Using build options features from pyproject.toml
+    Finished `release` profile [optimized] target(s) in 0.98s
+📦 Built wheel for CPython 3.12 to C:\Users\Jawarens\Documents\GitHub\vhs_capture\vhs_core\target\wheels\vhs_core-0.1.0-cp312-cp312-win_amd64.whl
+Processing .\target\wheels\vhs_core-0.1.0-cp312-cp312-win_amd64.whl
+Installing collected packages: vhs-core
+  Attempting uninstall: vhs-core
+    Found existing installation: vhs_core 0.1.0
+    Uninstalling vhs_core-0.1.0:
+      Successfully uninstalled vhs_core-0.1.0
+Successfully installed vhs-core-0.1.0
+487 INFO: PyInstaller: 6.21.0, contrib hooks: 2026.6
+489 INFO: Python: 3.12.10
+506 INFO: Platform: Windows-11-10.0.26220-SP0
+506 INFO: Python environment: C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0
+506 INFO: wrote C:\Users\Jawarens\Documents\GitHub\vhs_capture\VHS Capture.spec
+3386 WARNING: collect_data_files - skipping data collection for module 'sounddevice' as it is not a package.
+3386 WARNING: collect_dynamic_libs - skipping library collection for module 'sounddevice' as it is not a package.
+4612 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\Jawarens\\Documents\\GitHub\\vhs_capture',
+ 'C:\\Program '
+ 'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\\python312.zip',
+ 'C:\\Program '
+ 'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\\DLLs',
+ 'C:\\Program '
+ 'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\\Lib',
+ 'C:\\Program '
+ 'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0',
+ 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages',
+ 'C:\\Program '
+ 'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\\Lib\\site-packages',
+ 'C:\\Users\\Jawarens\\Documents\\GitHub\\vhs_capture']
+4994 INFO: Appending 'binaries' from .spec
+4995 INFO: Appending 'datas' from .spec
+5002 INFO: checking Analysis
+5003 INFO: Building Analysis because Analysis-00.toc is non existent
+5003 INFO: Looking for Python shared library...
+5003 INFO: Using Python shared library: C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\python312.dll
+5003 INFO: Running Analysis Analysis-00.toc
+5003 INFO: Target bytecode optimization level: 0
+5003 INFO: Initializing module dependency graph...
+5006 INFO: Initializing module graph hook caches...
+5068 INFO: Analyzing modules for base_library.zip ...
+6151 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+6224 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+7360 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+7552 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+8593 INFO: Caching module dependency graph...
+8622 INFO: Analyzing C:\Users\Jawarens\Documents\GitHub\vhs_capture\vhs_capture.py
+8690 INFO: Processing standard module hook 'hook-cv2.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+9069 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+9693 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+9713 INFO: SetuptoolsInfo: initializing cached setuptools info...
+11269 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+11387 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+11550 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+12429 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+13116 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+13252 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+13337 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+14618 INFO: Processing standard module hook 'hook-PyQt6.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+15242 INFO: Processing standard module hook 'hook-PyQt6.QtWidgets.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+20252 INFO: Processing standard module hook 'hook-PyQt6.QtCore.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+28437 INFO: Processing standard module hook 'hook-PyQt6.QtGui.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+65221 INFO: Processing standard module hook 'hook-sounddevice.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+65280 INFO: Processing standard module hook 'hook-imageio_ffmpeg.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+65365 INFO: Analyzing hidden import 'cv2.config'
+65366 INFO: Analyzing hidden import 'cv2.config-3'
+65378 INFO: Analyzing hidden import 'cv2.cv2'
+65379 INFO: Analyzing hidden import 'cv2.data'
+65389 INFO: Analyzing hidden import 'cv2.load_config_py2'
+65398 INFO: Analyzing hidden import 'cv2.mat_wrapper'
+65410 INFO: Analyzing hidden import 'cv2.misc'
+65435 INFO: Analyzing hidden import 'cv2.typing'
+65452 INFO: Analyzing hidden import 'cv2.utils'
+65465 INFO: Analyzing hidden import 'imageio_ffmpeg.binaries'
+65475 INFO: Processing module hooks (post-graph stage)...
+65528 INFO: Performing binary vs. data reclassification (197 entries)
+67805 INFO: Looking for ctypes DLLs
+67827 INFO: Analyzing run-time hooks ...
+67828 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks\\rthooks'
+67845 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks\\rthooks'
+67860 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks\\rthooks'
+67877 INFO: Including run-time hook 'pyi_rth_pyqt6.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks\\rthooks'
+67890 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+67915 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyInstaller\\hooks'
+67954 INFO: Creating base_library.zip...
+67964 INFO: Looking for dynamic libraries
+68827 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyQt6\\Qt6\\bin', 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\numpy.libs', 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\cv2\\../../x64/vc17/bin']
+68827 INFO: Extra DLL search directories (PATH): ['C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\cv2\\../../x64/vc17/bin', 'C:\\Users\\Jawarens\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python312\\site-packages\\PyQt6\\Qt6\\bin']
+69886 INFO: Warnings written to C:\Users\Jawarens\Documents\GitHub\vhs_capture\build\VHS Capture\warn-VHS Capture.txt
+69945 INFO: Graph cross-reference written to C:\Users\Jawarens\Documents\GitHub\vhs_capture\build\VHS Capture\xref-VHS Capture.html
+70009 INFO: checking PYZ
+70009 INFO: Building PYZ because PYZ-00.toc is non existent
+70009 INFO: Building PYZ (ZlibArchive) C:\Users\Jawarens\Documents\GitHub\vhs_capture\build\VHS Capture\PYZ-00.pyz
+70496 INFO: Building PYZ (ZlibArchive) C:\Users\Jawarens\Documents\GitHub\vhs_capture\build\VHS Capture\PYZ-00.pyz completed successfully.
+70508 INFO: checking PKG
+70508 INFO: Building PKG because PKG-00.toc is non existent
+70508 INFO: Building PKG (CArchive) VHS Capture.pkg
+107344 INFO: Building PKG (CArchive) VHS Capture.pkg completed successfully.
+107353 INFO: Bootloader C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+107353 INFO: checking EXE
+107353 INFO: Building EXE because EXE-00.toc is non existent
+107353 INFO: Building EXE from EXE-00.toc
+107353 INFO: Copying bootloader EXE to C:\Users\Jawarens\Documents\GitHub\vhs_capture\dist\VHS Capture.exe
+107470 INFO: Copying icon to EXE
+107517 INFO: Copying 0 resources to EXE
+107517 INFO: Embedding manifest in EXE
+107560 INFO: Appending PKG archive to EXE
+107652 INFO: Fixing EXE headers
+108333 INFO: Building EXE from EXE-00.toc completed successfully.
+108338 INFO: Build complete! The results are available in: C:\Users\Jawarens\Documents\GitHub\vhs_capture\dist
