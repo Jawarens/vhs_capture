@@ -1,15 +1,52 @@
-# VHS Capture
+# VHS Capture - VHS Tape Recorder & Auto-Splitter
 
-Records webcam input to AV1 (or H.265/H.264) and automatically splits recordings when a blue screen is detected between tape segments.
+🎬 Record from webcam to modern AV1/HEVC with automatic tape splitting on blue screen detection
+
+![Application Screenshot](placeholder.png)
+
+> Capture, detect, and split VHS tapes automatically with professional quality encoding!
 
 ## Requirements
 
 - Python 3.10+
 - FFmpeg with AV1 support (libsvtav1 recommended)
 
----
 
-## Installation
+## 📋 Quick Commands
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Build Rust extension (REQUIRED for best performance)
+./build_windows.bat  # Windows
+# or: bash build_linux.sh    # Linux
+# or: bash build_mac.sh      # macOS
+
+# Run application
+python vhs_capture.py
+
+# Build Windows executable
+python -m PyInstaller "VHS Capture.spec" --noconfirm
+```
+
+## 🎯 Features
+
+✅ **Modern Codecs:** AV1, HEVC, H.264 with CRF quality controls
+✅ **Hardware Acceleration:** NVENC (RTX 3000+) and QuickSync (Intel 6th+ Gen) support
+✅ **Auto-Split:** Detects VHS blue screens and splits video automatically
+✅ **Audio Meter:** Real-time microphone level monitoring
+✅ **Tape Timer:** Optional automatic stop after configured duration (30m/45m/60m/90m/120m)
+✅ **Multi-Platform:** Windows, Linux, macOS (via PyQt6 and Rust)
+
+## 📖 Documentation
+
+- **Full Setup Guide:** `SETUP.md` - Complete installation instructions
+- **Dependency Verification:** `verify.py` - Quick installation check
+- **Build System:** `VHS Capture.spec` (PyInstaller config for Windows executable)
+- **Icon Design:** `generate_icon.py` - Custom VHS tape icon generator
+
+
 
 ### Windows
 

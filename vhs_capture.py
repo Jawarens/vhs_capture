@@ -28,7 +28,7 @@ from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
 )
 from PyQt6.QtGui import (
-    QImage, QPixmap, QColor, QPalette, QTextCursor, QPainter, QPen
+    QImage, QPixmap, QColor, QPalette, QTextCursor, QPainter, QPen, QIcon
 )
 
 try:
@@ -1334,6 +1334,10 @@ class VHSCapture(QMainWindow):
         super().__init__()
         self.setWindowTitle("VHS Capture")
         self.setMinimumSize(900, 580)
+        # Set window icon
+        _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vhs_capture.ico")
+        if os.path.exists(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
         self._capture: CaptureThread | None = None
         self._audio_meter: AudioMeterThread | None = None
         self._recording = False
@@ -2271,8 +2275,21 @@ class VHSCapture(QMainWindow):
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Set Windows taskbar app ID so the icon displays correctly
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("vhs.capture.app")
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Set application icon (window title bar, taskbar, exe)
+    _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vhs_capture.ico")
+    if os.path.exists(_icon_path):
+        app.setWindowIcon(QIcon(_icon_path))
 
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window,          QColor(15, 15, 15))

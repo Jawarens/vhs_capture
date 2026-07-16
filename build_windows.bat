@@ -4,10 +4,10 @@ setlocal enabledelayedexpansion
 set LOGFILE=%~dp0build_log.txt
 echo Build started %date% %time% > "%LOGFILE%"
 
-echo ============================================================
-echo  VHS Capture -- Windows build (Python + Rust + FFmpeg)
-echo  Log: %LOGFILE%
-echo ============================================================
+echo ==============================================================
+echo VHS Capture -- Windows build (Python + Rust + FFmpeg)
+echo Log: %LOGFILE%
+echo ==============================================================
 echo.
 
 :: ── Find Python and add its user Scripts dir to PATH ─────────────
@@ -49,21 +49,21 @@ if errorlevel 1 (
     echo Rust found.
 )
 
-:: ── Clean stale PyInstaller/Python caches ────────────────────────
+:: ── Clean stale PyInstaller/Python caches ────────────────────────────
 echo.
 echo Cleaning stale build caches...
 if exist "%~dp0build" (
     rmdir /s /q "%~dp0build"
-    echo   Removed build\
+    echo Removed build\
 )
 if exist "%~dp0dist" (
     rmdir /s /q "%~dp0dist"
-    echo   Removed dist\
+    echo Removed dist\
 )
 :: Remove .pyc files so PyInstaller always sees fresh source
 for /r "%~dp0" %%f in (*.pyc) do del "%%f" >nul 2>&1
 if exist "%~dp0__pycache__" rmdir /s /q "%~dp0__pycache__"
-echo   Done.
+echo Done.
 
 :: ── Install Python dependencies ──────────────────────────────────
 echo.
@@ -76,16 +76,16 @@ if errorlevel 1 (
     echo ERROR: pip install failed. See %LOGFILE%
     pause & exit /b 1
 )
-echo   Done.
+echo Done.
 
 :: ── Find maturin (handle --user install fallback) ─────────────────
 maturin --version >nul 2>&1
 if errorlevel 1 (
     set "MATURIN=python -m maturin"
-    echo   maturin via: python -m maturin
+    echo maturin via: python -m maturin
 ) else (
     set "MATURIN=maturin"
-    echo   maturin via: maturin
+    echo maturin via: maturin
 )
 
 :: ── Build Rust extension ──────────────────────────────────────────
@@ -109,16 +109,16 @@ if "%WHEEL%"=="" (
     cd "%~dp0"
     pause & exit /b 1
 )
-echo   Installing: %WHEEL%
+echo Installing: %WHEEL%
 python -m pip install --user --force-reinstall "%WHEEL%" >> "%LOGFILE%" 2>&1
 cd "%~dp0"
-echo   vhs_core installed.
+echo vhs_core installed.
 
 :: ── Verify vhs_core loads ─────────────────────────────────────────
 echo.
-python -c "import vhs_core; print('  vhs_core OK')"
+python -c "import vhs_core; print(' vhs_core OK')"
 if errorlevel 1 (
-    echo   WARNING: vhs_core failed to import -- app runs in fallback mode.
+    echo WARNING: vhs_core failed to import -- app runs in fallback mode.
 )
 
 :: ── Verify FFmpeg (warn only -- imageio-ffmpeg provides a fallback) ──
@@ -126,8 +126,8 @@ ffmpeg -version >nul 2>&1
 if errorlevel 1 (
     echo.
     echo NOTE: FFmpeg not found on PATH.
-    echo   imageio-ffmpeg will provide a bundled binary for recording.
-    echo   For hardware GPU encoding install FFmpeg: winget install ffmpeg
+    echo imageio-ffmpeg will provide a bundled binary for recording.
+    echo For hardware GPU encoding install FFmpeg: winget install ffmpeg
     echo.
 ) else (
     echo FFmpeg found on PATH.
@@ -142,6 +142,8 @@ python -m PyInstaller ^
     --windowed ^
     --name "VHS Capture" ^
     --add-data "README.md;." ^
+    --add-data "vhs_capture.ico;." ^
+    --icon "vhs_capture.ico" ^
     --hidden-import "cv2" ^
     --hidden-import "numpy" ^
     --hidden-import "vhs_core" ^
@@ -165,12 +167,12 @@ if errorlevel 1 (
 
 echo.
 echo ============================================================
-echo  BUILD COMPLETE
+echo BUILD COMPLETE
 echo.
-echo  Executable : dist\VHS Capture.exe
+echo Executable : dist\VHS Capture.exe
 echo.
-echo  FFmpeg     : bundled via imageio-ffmpeg (libsvtav1/libx264)
-echo               For GPU encoding (NVENC/QSV) also install:
-echo               winget install ffmpeg
+echo FFmpeg : bundled via imageio-ffmpeg (libsvtav1/libx264)
+echo For GPU encoding (NVENC/QSV) also install:
+echo    winget install ffmpeg
 echo ============================================================
 pause

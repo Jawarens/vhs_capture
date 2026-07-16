@@ -1,0 +1,37 @@
+==============================================================
+VHS Capture -- Windows build (Python + Rust + FFmpeg)
+Log: C:\Users\Jawarens\Documents\GitHub\vhs_capture\build_log.txt
+==============================================================
+
+Python: C:\Users\Jawarens\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe
+Scripts: C:\Users\Jawarens\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts
+
+Rust found.
+
+Cleaning stale build caches...
+Removed build\
+Done.
+
+Installing Python dependencies...
+Done.
+maturin via: maturin
+
+Building Rust extension (vhs_core)...
+Installing: C:\Users\Jawarens\Documents\GitHub\vhs_capture\vhs_core\target\wheels\vhs_core-0.1.0-cp312-cp312-win_amd64.whl
+vhs_core installed.
+
+ vhs_core OK
+FFmpeg found on PATH.
+
+Building standalone executable...
+
+============================================================
+BUILD COMPLETE
+
+Executable : dist\VHS Capture.exe
+
+FFmpeg : bundled via imageio-ffmpeg (libsvtav1/libx264)
+For GPU encoding (NVENC/QSV) also install:
+   winget install ffmpeg
+============================================================
+Press any key to continue . . . 
