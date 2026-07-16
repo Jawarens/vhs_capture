@@ -1020,7 +1020,7 @@ class CaptureThread(QThread):
             if now - last_preview >= preview_interval:
                 last_preview = now
                 preview = cv2.resize(frame, (640, 360),
-                                     interpolation=cv2.INTER_NEAREST)
+                                     interpolation=cv2.INTER_LINEAR)
                 # Draw overlay on capture thread so UI thread just blits
                 if self._recording:
                     audio_val = self._last_audio_val
@@ -1130,6 +1130,9 @@ class EventLog:
             )
         return "<br>".join(lines)
 
+    def clear(self):
+        self.events.clear()
+
 
 # ─────────────────────────────────────────────
 #  Camera picker dialog
@@ -1178,12 +1181,15 @@ def _probe_camera(index: int) -> dict | None:
 
 
 def _enumerate_cameras(max_index=8):
-    """Return list of camera info dicts for all working cameras."""
+    """Return list of camera info dicts for all working cameras (probed in parallel)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     found = []
-    for i in range(max_index):
-        info = _probe_camera(i)
-        if info:
-            found.append(info)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(_probe_camera, i): i for i in range(max_index)}
+        for fut in as_completed(futures):
+            info = fut.result()
+            if info:
+                found.append(info)
     return found
 
 
@@ -1330,6 +1336,9 @@ class _AudioScanner(QThread):
 
 
 class VHSCapture(QMainWindow):
+    # Signal for safe cross-thread clip item updates
+    _clip_size_updated = pyqtSignal(object, str, float)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VHS Capture")
@@ -1342,7 +1351,7 @@ class VHSCapture(QMainWindow):
         self._audio_meter: AudioMeterThread | None = None
         self._recording = False
         self._log = EventLog()
-        self._clips: list[str] = []
+        self._clips: dict[str, QListWidgetItem] = {}  # path → list item for live size updates
         self._seg_count = 0
         self._in_blue = False
         self._camera_index = 0
@@ -1358,7 +1367,18 @@ class VHSCapture(QMainWindow):
         self._restore_settings(cfg)
         self._apply_windows_theme()
 
-        self._log_event("info", "VHS Capture v0.2", "ready")
+        # ── Keyboard shortcuts ──────────────────────────────────────────
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        QShortcut(QKeySequence("Space"),           self).activated.connect(self._toggle_record)
+        QShortcut(QKeySequence("Enter"),           self).activated.connect(self._manual_split)
+        QShortcut(QKeySequence("Ctrl+O"),          self).activated.connect(self._open_camera)
+        QShortcut(QKeySequence("Ctrl+Shift+S"),    self).activated.connect(self._toggle_record)
+        # Show shortcut hints in status bar on first launch
+        QTimer.singleShot(3000, lambda: self._log_event(
+            "info", "Shortcuts: Space=record  Enter=split  Ctrl+O=camera", ""))
+
+        self._clip_size_updated.connect(self._update_clip_item)
+        self._log_event("info", "VHS Capture v0.3", "ready")
         if _RUST_AVAILABLE:
             self._log_event("info", "vhs_core (Rust) loaded",
                             "blue detection + BGR→RGB + FrameQueue active")
@@ -1559,7 +1579,7 @@ class VHSCapture(QMainWindow):
         self.audio_bar.setRange(0, 100)
         self.audio_bar.setValue(0)
         self.audio_bar.setTextVisible(False)
-        self.audio_bar.setFixedHeight(6)
+        self.audio_bar.setFixedHeight(14)
         self.audio_bar.setStyleSheet(
             f"QProgressBar{{background:{BORDER};border-radius:3px;border:none}}"
             f"QProgressBar::chunk{{background:{GREEN};border-radius:3px}}"
@@ -1649,7 +1669,7 @@ class VHSCapture(QMainWindow):
         out_lay.addLayout(self._settings_row("Part prefix:", self.edit_part))
 
         preview_lbl = QLabel("→  Title_Part_clip01_20240101_120000.mp4")
-        preview_lbl.setStyleSheet(f"color:{MUTED};font-size:11px;font-style:italic")
+        preview_lbl.setStyleSheet(f"color:#aaa;font-size:11px;font-family:Consolas,'Courier New',monospace")
         preview_lbl.setObjectName("fname_preview")
         out_lay.addWidget(preview_lbl)
 
@@ -1808,13 +1828,21 @@ class VHSCapture(QMainWindow):
         self.clips_list.setMaximumHeight(130)
         self.clips_list.itemDoubleClicked.connect(self._open_clip_folder)
         clips_lay.addWidget(self.clips_list)
-        clips_hint = QLabel("Double-click to open folder")
+        clips_hint = QLabel("Double-click to open folder  ·  size shown after mux")
         clips_hint.setStyleSheet(f"color:{MUTED};font-size:11px")
         clips_lay.addWidget(clips_hint)
         right.addWidget(clips_card)
 
         # Event log
         log_card, log_lay = self._section("EVENT LOG")
+        log_hdr_row = QHBoxLayout()
+        log_hdr_row.addStretch()
+        btn_clear_log = self._make_btn("Clear")
+        btn_clear_log.setFixedWidth(60)
+        btn_clear_log.setFixedHeight(26)
+        btn_clear_log.clicked.connect(self._clear_log)
+        log_hdr_row.addWidget(btn_clear_log)
+        log_lay.addLayout(log_hdr_row)
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(100)
@@ -2180,18 +2208,42 @@ class VHSCapture(QMainWindow):
         if path.endswith(":muxed"):
             real = path[:-6]
             self._log_event("info", "Audio muxed", Path(real).name)
+            # Refresh the item's size since mux may have changed file size
+            item = self._clips.get(real)
+            if item:
+                def _refresh():
+                    try:
+                        sz = Path(real).stat().st_size
+                        if sz > 0:
+                            self._clip_size_updated.emit(item, Path(real).name, sz / 1024 / 1024)
+                    except Exception:
+                        pass
+                threading.Thread(target=_refresh, daemon=True).start()
             return
 
         # Normal segment split
-        self._clips.append(path)
-        self.stat_clips.setText(str(len(self._clips)))
+        self._clips[path] = None   # placeholder while audio mux runs
+        clip_num = len(self._clips)
+        self.stat_clips.setText(str(clip_num))
         name = Path(path).name
         self._log_event("split", f"New segment: {name}", f"t={elapsed:.1f}s")
-        item = QListWidgetItem(f"  {len(self._clips):02d}  {name}")
+        item = QListWidgetItem(f"  {clip_num:02d}  {name}   —")
         item.setData(Qt.ItemDataRole.UserRole, path)
         item.setToolTip(path)
         self.clips_list.addItem(item)
+        self._clips[path] = item
         self.clips_list.scrollToBottom()
+
+        # Update with size in background after file settles
+        def _update_size():
+            time.sleep(1.5)
+            try:
+                sz = Path(path).stat().st_size
+                if sz > 0:
+                    self._clip_size_updated.emit(item, name, sz / 1024 / 1024)
+            except Exception:
+                pass
+        threading.Thread(target=_update_size, daemon=True).start()
 
     def _open_clip_folder(self, item: QListWidgetItem):
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -2204,6 +2256,12 @@ class VHSCapture(QMainWindow):
             subprocess.Popen(["open", "-R", path])
         else:
             subprocess.Popen(["xdg-open", folder])
+
+    def _update_clip_item(self, item: QListWidgetItem, name: str, size_mb: float):
+        """Update a clip list item with human-readable size, called via signal from bg thread."""
+        text = f"{item.text().split('  ', 1)[0]}  {name}  ({size_mb:.1f} MB)"
+        item.setText(text)
+        item.setForeground(QColor(MUTED))
 
     def _set_tape_minutes(self, mins: int):
         self.spin_tape_mins.setValue(mins)
@@ -2260,6 +2318,10 @@ class VHSCapture(QMainWindow):
                 f"<span style='color:{col};font-weight:bold'>{msg}</span>{det}")
         self.log_view.append(html)
         self.log_view.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _clear_log(self):
+        self._log.clear()
+        self.log_view.clear()
 
     def closeEvent(self, event):
         self._save_settings()

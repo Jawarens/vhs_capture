@@ -1,5 +1,5 @@
 /dist
-test_capture.pcm
-test_app_audio3.pcm
-test_app_audio2.pcm
-test_app_audio.pcm
+/build
+__pycache__/
+*.pyc
+*.pcm
