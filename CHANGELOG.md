@@ -5,6 +5,22 @@ All notable changes to VHS Capture are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-09-26
+
+### Added
+- **Modern vector icon suite**: High-DPI anti-aliased icon generator (`generate_icon.py`) producing multi-resolution `.ico` (256, 128, 64, 48, 32, 16 px) and 1024x1024 master preview (`vhs_camcorder_icon.png`), combining obsidian camcorder body, optical coated lens, smoked cassette window, tape spools, and classic VHS tricolor racing stripes.
+- **In-app UI iconography**: Camcorder action button glyphs (`📹 Open camera` / `📹 Change camera`, `⏺ Start recording` / `⏹ Stop recording`, `✂ Split now`), modal window icons, and tactile button micro-interactions (responsive hover and pressed states).
+- **Header icon badge**: Integrated 38×38 application branding mark in the main window header.
+
+### Fixed
+- **File locking race condition on audio/video muxing**: Replaced in-place temporary file writes in `stop_and_mux` with transient `.mux_tmp*` files, explicit ffmpeg subprocess cleanup, Windows file lock retry loop, and stale temp cleanup on startup.
+- **Frame loss during auto-splits**: Implemented `_flush_queue_to` in `_WriterThread` ensuring frames queued during split boundaries are cleanly flushed into the new segment instead of being dropped.
+- **Windows console crash in verification tools**: Fixed Windows CP1252 stdout encoding crashes in `verify.py` and `test_icons.py` using `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`.
+
+### Optimized
+- **Native blue detection zero-copy buffer**: Optimized `vhs_core` to inspect frame contiguous memory directly without allocating a 6.2 MB duplicate buffer on every single video frame, reducing blue detection overhead from 6.2 MB to 10.8 KB per frame.
+- **Direct BGR888 preview rendering**: Updated preview pipeline to use `QImage.Format.Format_BGR888`, avoiding expensive per-frame OpenCV `cvtColor(BGR2RGB)` copies in the UI thread.
+
 ## [0.3.0] — 2026-07-16
 
 ### Added

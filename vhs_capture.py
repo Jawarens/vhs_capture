@@ -4,6 +4,8 @@ Requires: pip install PyQt6 opencv-python numpy sounddevice imageio-ffmpeg
 FFmpeg is bundled via imageio-ffmpeg if not found on system PATH.
 """
 
+__version__ = "0.3.1"
+
 import sys
 import os
 import cv2
@@ -30,6 +32,17 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QImage, QPixmap, QColor, QPalette, QTextCursor, QPainter, QPen, QIcon
 )
+
+# In windowed PyInstaller on Windows, sys.stdout and sys.stderr may be None.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+def resource_path(relative_path: str) -> str:
+    """Get absolute path to resource, works for dev and for PyInstaller."""
+    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 try:
     import sounddevice as sd
@@ -76,19 +89,16 @@ except ImportError:
 def analyse_blue_ratio(frame, sample_w=80, sample_h=45):
     """
     Return fraction of pixels in frame that are 'VHS blue'.
-    Uses the Rust extension (vhs_core) when available — skips the cv2.resize
-    step entirely by doing the downsample inside Rust, saving one allocation.
-    Falls back to numpy when the extension isn't installed.
+    Pre-downsamples to (sample_w, sample_h) before passing to vhs_core or numpy,
+    avoiding multi-megabyte copies of full resolution frames.
     """
+    small = cv2.resize(frame, (sample_w, sample_h), interpolation=cv2.INTER_NEAREST)
     if _RUST_AVAILABLE:
-        h, w = frame.shape[:2]
-        # Pass raw bytes directly — no copy made by numpy here
         return _vhs_core.detect_blue(
-            frame.tobytes(), w, h, 0.0, sample_w, sample_h
+            small.tobytes(), sample_w, sample_h, 0.0, sample_w, sample_h
         )
 
     # ── numpy fallback ────────────────────────────────────────────────
-    small = cv2.resize(frame, (sample_w, sample_h))
     b_ch  = small[:, :, 0].astype(np.float32)
     g_ch  = small[:, :, 1].astype(np.float32)
     r_ch  = small[:, :, 2].astype(np.float32)
@@ -134,8 +144,9 @@ class AudioMeterThread(QThread):
     """Reads microphone/line-in and emits RMS level 20x/sec."""
     level = pyqtSignal(float)   # 0.0–1.0
 
-    def __init__(self):
+    def __init__(self, device_name: str = ""):
         super().__init__()
+        self.device_name = device_name
         self._running = False
 
     def run(self):
@@ -143,8 +154,18 @@ class AudioMeterThread(QThread):
             return
         self._running = True
         try:
-            # Open with a reasonable default blocksize; query actual rate after open
-            with sd.InputStream(channels=1, dtype='float32') as stream:
+            device_idx = None
+            if self.device_name and self.device_name.lower() != "no audio":
+                try:
+                    for i, d in enumerate(sd.query_devices()):
+                        if d.get("max_input_channels", 0) > 0 and self.device_name.lower() in d["name"].lower():
+                            device_idx = i
+                            break
+                except Exception:
+                    pass
+
+            # Open stream (device=None uses system default if device_idx not found)
+            with sd.InputStream(device=device_idx, channels=1, dtype='float32') as stream:
                 actual_rate = stream.samplerate or 44100
                 block = max(512, int(actual_rate // 20))  # ~50ms blocks
                 while self._running:
@@ -359,7 +380,7 @@ def _friendly_hw_error(enc: str, stderr: str) -> str:
     if is_nvenc:
         if "invalid argument" in s or "error code: -22" in s:
             return (f"{enc}: invalid argument — driver mismatch or codec not supported "
-                    "(AV1 NVENC requires RTX 3000+; ensure Game Ready/Studio driver is current)")
+                    "(AV1 NVENC requires RTX 4000+ / Ada Lovelace; ensure Game Ready/Studio driver is current)")
         if "libcuda" in s or "cannot load nvcuda" in s or "no cuda" in s:
             return f"{enc}: NVIDIA driver not found — install Game Ready or Studio driver"
         if "no capable devices" in s or "device open failed" in s:
@@ -704,14 +725,19 @@ class AudioRecorder:
                             print(f"[AudioRecorder STDERR] {decoded}")
         threading.Thread(target=_drain_stderr, daemon=True, name="audio-stderr").start()
 
-    def stop_and_mux(self, video_path: str, on_done=None, on_error=None):
+    def stop_and_mux(self, video_path: str, video_writer: FFmpegWriter | None = None,
+                     on_done=None, on_error=None):
         """
-        Stop audio capture, then mux audio+video into the final file.
+        Stop audio capture, ensure video writer is finished, then mux audio+video.
         Runs in a background thread so it never blocks the capture loop.
         video_path is the completed video-only file — replaced by muxed output.
         """
         def _work():
-            # Stop audio capture — hard-kill is fine for raw PCM (no header to corrupt)
+            # Ensure the video writer has cleanly exited and flushed all frames to disk
+            if video_writer:
+                video_writer.stop()
+
+            # Stop audio capture — raw PCM has no header to corrupt
             if self._proc:
                 try:
                     self._proc.terminate()
@@ -724,30 +750,37 @@ class AudioRecorder:
                     self._proc.wait(timeout=2)
                 self._proc = None
 
-            # Give the OS a moment to flush file buffers to disk
-            time.sleep(0.5)
+            # Brief pause for OS file buffers to settle
+            time.sleep(0.3)
+
+            pcm = Path(self.temp_path)
+            vpath = Path(video_path)
+
+            if not vpath.exists():
+                pcm.unlink(missing_ok=True)
+                if on_error:
+                    on_error(f"Video file missing: {video_path}")
+                return
 
             # Check PCM file exists and has content
             # Raw s16le: 48000 samples * 2 ch * 2 bytes = 192000 bytes/sec
-            pcm = Path(self.temp_path)
             if not pcm.exists() or pcm.stat().st_size < 20480:
+                pcm.unlink(missing_ok=True)
                 if on_error:
                     on_error("Audio file empty or missing — saved video only")
-                pcm.unlink(missing_ok=True)
+                if on_done:
+                    on_done()
                 return
 
             # Mux: video + audio → temp output, then replace original
-            vpath   = Path(video_path)
             out_tmp = vpath.with_suffix(".mux_tmp" + vpath.suffix)
-            # -movflags +faststart is MP4-only; skip for MKV
             is_mp4  = vpath.suffix.lower() == ".mp4"
             cmd = [
                 self.ffmpeg_bin, "-y",
-                "-i", video_path,
-                # Read raw PCM with explicit format/rate/channels
+                "-i", str(vpath),
                 "-f", "s16le", "-ar", "48000", "-ac", "2",
                 "-i", str(pcm),
-                "-c:v", "copy",        # video stream: zero re-encode
+                "-c:v", "copy",        # zero re-encode of video stream
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-shortest",           # trim to shorter of video/audio
@@ -755,25 +788,41 @@ class AudioRecorder:
             if is_mp4:
                 cmd += ["-movflags", "+faststart"]
             cmd.append(str(out_tmp))
+
             try:
                 r = subprocess.run(cmd, capture_output=True, timeout=180, **_NO_WINDOW)
                 if r.returncode == 0 and out_tmp.exists():
-                    out_tmp.replace(vpath)   # atomic replace
-                    if on_done:
-                        on_done()
+                    # Retry replace up to 5 times on Windows to handle momentary file locks
+                    replaced = False
+                    for _ in range(5):
+                        try:
+                            out_tmp.replace(vpath)
+                            replaced = True
+                            break
+                        except OSError:
+                            time.sleep(0.2)
+                    if replaced:
+                        if on_done:
+                            on_done()
+                    else:
+                        out_tmp.replace(vpath)
                 else:
                     err = r.stderr.decode(errors="replace")[-400:]
                     if on_error:
                         on_error(f"Mux failed (rc={r.returncode}): {err}")
                     out_tmp.unlink(missing_ok=True)
+                    if on_done:
+                        on_done()
             except Exception as e:
                 if on_error:
                     on_error(str(e))
                 out_tmp.unlink(missing_ok=True)
+                if on_done:
+                    on_done()
             finally:
                 pcm.unlink(missing_ok=True)
 
-        threading.Thread(target=_work, daemon=True).start()
+        threading.Thread(target=_work, daemon=True, name="audio-mux").start()
 
 
 
@@ -803,38 +852,55 @@ class _WriterThread(threading.Thread):
         self._writer: FFmpegWriter | None = None
         self._lock = threading.Lock()
         self._running = True
+        self._has_item = threading.Event()
         self._on_error = on_error  # callable(list[str]) for FFmpeg errors
 
-    def set_writer(self, w: FFmpegWriter | None):
+    def set_writer(self, w: FFmpegWriter | None) -> FFmpegWriter | None:
+        """
+        Drains all queued frames to the active writer before swapping.
+        Returns the previous writer so the caller can finalize it cleanly.
+        """
         with self._lock:
             old = self._writer
+            if old:
+                self._flush_queue_to(old)
             self._writer = w
-        if old:
-            def _stop_and_report():
-                old.stop()
-                if self._on_error:
-                    errs = old.last_errors()
-                    if errs:
-                        self._on_error(errs)
-            threading.Thread(target=_stop_and_report, daemon=True).start()
+        return old
+
+    def _flush_queue_to(self, target_writer: FFmpegWriter):
+        if self._use_rust:
+            while True:
+                raw = self._q.pop()
+                if raw is None:
+                    break
+                target_writer.write_raw(raw)
+        else:
+            while not self._q.empty():
+                try:
+                    raw = self._q.get_nowait()
+                    target_writer.write_raw(raw)
+                except _queue.Empty:
+                    break
 
     def push(self, frame: np.ndarray):
         """Non-blocking push; drops frame if queue is full."""
         raw = frame.tobytes()
         if self._use_rust:
-            self._q.push(raw)          # returns bool, we ignore it
+            self._q.push(raw)
         else:
             try:
                 self._q.put_nowait(raw)
             except _queue.Full:
                 pass
+        self._has_item.set()
 
     def run(self):
         while self._running:
             if self._use_rust:
                 raw = self._q.pop()
                 if raw is None:
-                    time.sleep(0.002)  # brief yield when empty
+                    self._has_item.clear()
+                    self._has_item.wait(timeout=0.05)
                     continue
             else:
                 try:
@@ -849,6 +915,7 @@ class _WriterThread(threading.Thread):
 
     def stop(self):
         self._running = False
+        self._has_item.set()
         self.join(timeout=5)
         with self._lock:
             if self._writer:
@@ -890,16 +957,10 @@ class CaptureThread(QThread):
     def stop_recording(self):
         with QMutexLocker(self._mutex):
             self._recording = False
-        # Clean up audio recorder first to ensure orderly shutdown
-        if self._audio_recorder:
-            prev_audio, self._audio_recorder = self._audio_recorder, None
-            prev_audio.stop_and_mux(
-                self._current_video_path,
-                on_done=lambda:None,  # already signaling on stop
-                on_error=self.error.emit,
-            )
-        self._writer_thread.set_writer(None)
-        self._finish_audio_segment(self._current_video_path)
+        old_w = self._writer_thread.set_writer(None)
+        prev_video = self._current_video_path
+        self._current_video_path = ""
+        self._finish_audio_segment(prev_video, old_w)
 
     def manual_split(self):
         # Do NOT hold the mutex while calling _start_new_segment —
@@ -913,16 +974,23 @@ class CaptureThread(QThread):
         """Called from UI thread; float read in capture thread is atomic on CPython."""
         self._last_audio_val = val
 
-    def _finish_audio_segment(self, video_path: str):
+    def _finish_audio_segment(self, video_path: str, video_writer: FFmpegWriter | None = None):
         """Stop current audio recorder and mux into the video file."""
         ar = self._audio_recorder
         self._audio_recorder = None
         if ar and video_path:
             ar.stop_and_mux(
                 video_path,
+                video_writer=video_writer,
                 on_done=lambda: self.segment_split.emit(video_path + ":muxed", 0.0),
                 on_error=lambda e: self.error.emit(f"Audio mux: {e}"),
             )
+        elif video_path:
+            def _stop_video_only():
+                if video_writer:
+                    video_writer.stop()
+                self.segment_split.emit(video_path + ":muxed", 0.0)
+            threading.Thread(target=_stop_video_only, daemon=True).start()
 
     def _start_new_segment(self):
         cfg = self.cfg
@@ -942,24 +1010,25 @@ class CaptureThread(QThread):
         fname  = out_dir / f"{'_'.join(parts)}.{ext}"
         self._segment_index += 1
 
-        # Finish previous audio segment before starting writer for new one
-        prev_video = self._current_video_path
-        self._current_video_path = str(fname)
-        self._finish_audio_segment(prev_video)
-
-        # Start video writer
-        w = FFmpegWriter(
+        # Start new video writer
+        new_w = FFmpegWriter(
             str(fname),
             cfg["width"], cfg["height"], cfg["fps"],
             encoder=cfg["encoder"], crf=cfg["crf"],
             encoder_info=cfg.get("encoder_info"),
         )
-        w.start()
-        self._writer_thread.set_writer(w)
+        new_w.start()
+
+        # Swap writer in background thread and flush remaining frames into previous writer
+        old_w = self._writer_thread.set_writer(new_w)
+
+        # Finish previous audio segment before switching to new one
+        prev_video = self._current_video_path
+        self._current_video_path = str(fname)
+        self._finish_audio_segment(prev_video, old_w)
 
         # Start audio recorder if configured
         audio_dev = cfg.get("audio_device", "")
-        ff = cfg.get("encoder_info", {}).get("ffmpeg_bin", FFMPEG_BIN) or FFMPEG_BIN
         sys_ff = _system_ffmpeg() or FFMPEG_BIN
         if audio_dev:
             tmp_pcm = str(out_dir / f".audio_tmp_{self._segment_index:03d}.pcm")
@@ -1016,17 +1085,19 @@ class CaptureThread(QThread):
             now = time.time()
             frame_count += 1
 
-            # ── Throttled preview emit ───────────────────────
+            # ── Throttled preview emit (dynamic aspect ratio, e.g. 4:3 for VHS) ──
             if now - last_preview >= preview_interval:
                 last_preview = now
-                preview = cv2.resize(frame, (640, 360),
+                fh, fw = frame.shape[:2]
+                pw = 640
+                ph = max(180, int(round(pw * fh / fw)))
+                preview = cv2.resize(frame, (pw, ph),
                                      interpolation=cv2.INTER_LINEAR)
                 # Draw overlay on capture thread so UI thread just blits
                 if self._recording:
                     audio_val = self._last_audio_val
                     bar_h = max(2, int(audio_val * 40))
                     bar_w = 8
-                    pw, ph = 640, 360
                     x = pw - bar_w - 10
                     y_bot = ph - 10
                     cv2.rectangle(preview, (x, y_bot - 40), (x + bar_w, y_bot),
@@ -1056,7 +1127,10 @@ class CaptureThread(QThread):
                         if auto_split:
                             with QMutexLocker(self._mutex):
                                 if self._recording:
-                                    self._writer_thread.set_writer(None)
+                                    old_w = self._writer_thread.set_writer(None)
+                                    old_vid = self._current_video_path
+                                    self._current_video_path = ""
+                                    self._finish_audio_segment(old_vid, old_w)
                 else:
                     blue_start_time = None
 
@@ -1073,6 +1147,7 @@ class CaptureThread(QThread):
                                         self._start_new_segment()
                                 # Re-snapshot cfg in case encoder/quality changed
                                 loop = _snapshot_cfg()
+
 
             # ── Write frame to encoder queue ─────────────────
             with QMutexLocker(self._mutex):
@@ -1201,6 +1276,9 @@ class CameraPickerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Select camera")
         self.setMinimumWidth(460)
+        _icon_path = resource_path("vhs_capture.ico")
+        if os.path.exists(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
         self.setStyleSheet(
             f"QDialog{{background:#1a1a1a;color:#e8e8e8}}"
             f"QLabel{{color:#e8e8e8}}"
@@ -1344,7 +1422,7 @@ class VHSCapture(QMainWindow):
         self.setWindowTitle("VHS Capture")
         self.setMinimumSize(900, 580)
         # Set window icon
-        _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vhs_capture.ico")
+        _icon_path = resource_path("vhs_capture.ico")
         if os.path.exists(_icon_path):
             self.setWindowIcon(QIcon(_icon_path))
         self._capture: CaptureThread | None = None
@@ -1363,6 +1441,17 @@ class VHSCapture(QMainWindow):
         cfg = load_settings()
         self._output_dir = cfg.get("output_dir", str(Path.home() / "VHS_Captures"))
 
+        # Clean up any stale temp files from previous sessions
+        try:
+            out_p = Path(self._output_dir)
+            if out_p.is_dir():
+                for tmp_file in out_p.glob(".audio_tmp_*.pcm"):
+                    tmp_file.unlink(missing_ok=True)
+                for tmp_file in out_p.glob("*.mux_tmp*"):
+                    tmp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
         self._build_ui()
         self._restore_settings(cfg)
         self._apply_windows_theme()
@@ -1378,7 +1467,7 @@ class VHSCapture(QMainWindow):
             "info", "Shortcuts: Space=record  Enter=split  Ctrl+O=camera", ""))
 
         self._clip_size_updated.connect(self._update_clip_item)
-        self._log_event("info", "VHS Capture v0.3", "ready")
+        self._log_event("info", f"VHS Capture v{__version__}", "ready")
         if _RUST_AVAILABLE:
             self._log_event("info", "vhs_core (Rust) loaded",
                             "blue detection + BGR→RGB + FrameQueue active")
@@ -1392,7 +1481,7 @@ class VHSCapture(QMainWindow):
         # Log FFmpeg status immediately so user knows what encoding options to expect
         sys_ff = _system_ffmpeg()
         if sys_ff:
-            self._log_event("info", f"System FFmpeg found", sys_ff)
+            self._log_event("info", "System FFmpeg found", sys_ff)
         else:
             self._log_event("stop", "System FFmpeg not found",
                             "GPU encoding (NVENC/QSV) unavailable — run: winget install ffmpeg")
@@ -1419,19 +1508,22 @@ class VHSCapture(QMainWindow):
         if primary:
             b.setStyleSheet(
                 f"QPushButton{{{base}background:{SURFACE};color:{TEXT};}}"
-                f"QPushButton:hover{{background:#252525;border-color:#444;}}"
+                f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff;}}"
+                f"QPushButton:pressed{{background:#1d2028;}}"
                 f"QPushButton:disabled{{color:#444;border-color:{BORDER};}}"
             )
         elif danger:
             b.setStyleSheet(
                 f"QPushButton{{{base}background:{RED_BG};color:{RED};border-color:{RED};}}"
-                f"QPushButton:hover{{background:#3a0e0e;}}"
+                f"QPushButton:hover{{background:#3d1012;border-color:#ff4d4d;color:#fff;}}"
+                f"QPushButton:pressed{{background:#280808;}}"
                 f"QPushButton:disabled{{color:#444;border-color:{BORDER};}}"
             )
         else:
             b.setStyleSheet(
                 f"QPushButton{{{base}background:transparent;color:{MUTED};}}"
-                f"QPushButton:hover{{background:{SURFACE};color:{TEXT};}}"
+                f"QPushButton:hover{{background:{SURFACE};color:{TEXT};border-color:#444;}}"
+                f"QPushButton:pressed{{background:#181a20;}}"
                 f"QPushButton:disabled{{color:#444;border-color:{BORDER};}}"
             )
         return b
@@ -1505,8 +1597,15 @@ class VHSCapture(QMainWindow):
 
         # Header
         hdr_row = QHBoxLayout()
-        title = QLabel("VHS capture")
-        title.setStyleSheet(f"color:{TEXT};font-size:18px;font-weight:600")
+        hdr_icon = QLabel()
+        _icon_path = resource_path("vhs_capture.ico")
+        if os.path.exists(_icon_path):
+            hdr_icon.setPixmap(QIcon(_icon_path).pixmap(38, 38))
+            hdr_icon.setFixedSize(38, 38)
+            hdr_row.addWidget(hdr_icon)
+            hdr_row.addSpacing(6)
+        title = QLabel("VHS Capture")
+        title.setStyleSheet(f"color:{TEXT};font-size:19px;font-weight:700;letter-spacing:0.02em")
         sub = QLabel("Record tapes · detect blue screens · split clips")
         sub.setStyleSheet(f"color:{MUTED};font-size:12px")
         hdr_col = QVBoxLayout()
@@ -1594,7 +1693,7 @@ class VHSCapture(QMainWindow):
         # Action buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        self.btn_cam   = self._make_btn("⏵  Open camera", primary=True)
+        self.btn_cam   = self._make_btn("📹  Open camera", primary=True)
         self.btn_rec   = self._make_btn("⏺  Start recording", primary=True)
         self.btn_split = self._make_btn("✂  Split now")
         self.btn_cam.clicked.connect(self._open_camera)
@@ -1651,8 +1750,8 @@ class VHSCapture(QMainWindow):
         self.lbl_outdir = QLabel(self._output_dir)
         self.lbl_outdir.setStyleSheet(f"color:{TEXT};font-size:12px")
         self.lbl_outdir.setWordWrap(True)
-        btn_dir = self._make_btn("Browse…")
-        btn_dir.setFixedWidth(90)
+        btn_dir = self._make_btn("📁  Browse…")
+        btn_dir.setFixedWidth(100)
         btn_dir.clicked.connect(self._pick_dir)
         dir_row.addWidget(self.lbl_outdir, 1)
         dir_row.addWidget(btn_dir)
@@ -1668,7 +1767,8 @@ class VHSCapture(QMainWindow):
         self.edit_part.setFixedHeight(30)
         out_lay.addLayout(self._settings_row("Part prefix:", self.edit_part))
 
-        preview_lbl = QLabel("→  Title_Part_clip01_20240101_120000.mp4")
+        ts_now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        preview_lbl = QLabel(f"→  clip01_{ts_now}.mp4")
         preview_lbl.setStyleSheet(f"color:#aaa;font-size:11px;font-family:Consolas,'Courier New',monospace")
         preview_lbl.setObjectName("fname_preview")
         out_lay.addWidget(preview_lbl)
@@ -1676,7 +1776,8 @@ class VHSCapture(QMainWindow):
         def _update_preview():
             t = self.edit_title.text().strip()
             p = self.edit_part.text().strip()
-            parts = [x for x in [t, p, "clip01", "20240101_120000"] if x]
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            parts = [x for x in [t, p, "clip01", ts] if x]
             preview_lbl.setText("→  " + "_".join(parts) + ".mp4")
         self.edit_title.textChanged.connect(_update_preview)
         self.edit_part.textChanged.connect(_update_preview)
@@ -1702,10 +1803,11 @@ class VHSCapture(QMainWindow):
         audio_row = QHBoxLayout()
         audio_lbl = QLabel("Audio device:")
         audio_lbl.setStyleSheet(f"color:{MUTED};font-size:13px;min-width:120px")
-        btn_audio_refresh = self._make_btn("Rescan")
-        btn_audio_refresh.setFixedWidth(60)
+        btn_audio_refresh = self._make_btn("🔄  Rescan")
+        btn_audio_refresh.setFixedWidth(88)
         btn_audio_refresh.setFixedHeight(30)
         btn_audio_refresh.clicked.connect(self._rescan_audio)
+        self.combo_audio.currentIndexChanged.connect(self._on_audio_device_changed)
         audio_row.addWidget(audio_lbl)
         audio_row.addWidget(self.combo_audio, 1)
         audio_row.addWidget(btn_audio_refresh)
@@ -1946,6 +2048,21 @@ class VHSCapture(QMainWindow):
         self._audio_scanner.done.connect(self._populate_audio_devices)
         self._audio_scanner.start()
 
+    def _on_audio_device_changed(self, idx: int):
+        if self._audio_meter:
+            self._audio_meter.stop()
+            self._audio_meter = None
+        if _AUDIO_AVAILABLE and idx > 0 and self._capture:
+            dev_name = self.combo_audio.currentText()
+            self._audio_meter = AudioMeterThread(dev_name)
+            self._audio_meter.level.connect(
+                lambda v: self.audio_bar.setValue(int(v * 100))
+            )
+            self._audio_meter.level.connect(self._capture.set_audio_level)
+            self._audio_meter.start()
+        elif idx <= 0:
+            self.audio_bar.setValue(0)
+
     def _restore_settings(self, cfg: dict):
         self.lbl_outdir.setText(self._output_dir)
         self.edit_title.setText(cfg.get("title_prefix", ""))
@@ -2058,7 +2175,8 @@ class VHSCapture(QMainWindow):
         if self._audio_meter:
             self._audio_meter.stop()
         if _AUDIO_AVAILABLE:
-            self._audio_meter = AudioMeterThread()
+            cur_audio = "" if self.combo_audio.currentIndex() <= 0 else self.combo_audio.currentText()
+            self._audio_meter = AudioMeterThread(cur_audio)
             self._audio_meter.level.connect(
                 lambda v: self.audio_bar.setValue(int(v * 100))
             )
@@ -2067,7 +2185,7 @@ class VHSCapture(QMainWindow):
             self._audio_meter.start()
 
         self.btn_rec.setEnabled(True)
-        self.btn_cam.setText("⏵  Change camera")
+        self.btn_cam.setText("📹  Change camera")
         self.badge_idle.setText("● Live")
         self._log_event("info", "Camera opened",
                         f"index {cfg['camera_index']} @ {cfg['width']}×{cfg['height']} {cfg['fps']}fps")
@@ -2120,7 +2238,8 @@ class VHSCapture(QMainWindow):
         self.btn_rec.setStyleSheet(
             f"QPushButton{{background:{RED_BG};color:{RED};border:1px solid {RED};"
             f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:500;height:36px}}"
-            f"QPushButton:hover{{background:#3a0e0e}}"
+            f"QPushButton:hover{{background:#3d1012;border-color:#ff4d4d;color:#fff}}"
+            f"QPushButton:pressed{{background:#280808}}"
         )
         self.btn_split.setEnabled(True)
         self.badge_idle.setVisible(False)
@@ -2135,7 +2254,8 @@ class VHSCapture(QMainWindow):
         self.btn_rec.setStyleSheet(
             f"QPushButton{{background:{SURFACE};color:{TEXT};border:1px solid {BORDER};"
             f"border-radius:8px;padding:0 18px;font-size:13px;font-weight:500;height:36px}}"
-            f"QPushButton:hover{{background:#252525;border-color:#444}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff}}"
+            f"QPushButton:pressed{{background:#1d2028}}"
             f"QPushButton:disabled{{color:#444;border-color:{BORDER}}}"
         )
         self.btn_split.setEnabled(False)
@@ -2162,12 +2282,7 @@ class VHSCapture(QMainWindow):
     def _on_frame(self, frame: np.ndarray):
         # Overlay is already drawn on the capture thread before emit.
         h, w = frame.shape[:2]
-        if _RUST_AVAILABLE:
-            raw = _vhs_core.bgr_to_rgb(frame.tobytes())
-            img = QImage(raw, w, h, w * 3, QImage.Format.Format_RGB888).copy()
-        else:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = QImage(rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
+        img = QImage(frame.data, w, h, frame.strides[0], QImage.Format.Format_BGR888)
         pix = QPixmap.fromImage(img)
         lw, lh = self.preview_label.width(), self.preview_label.height()
         if pix.width() != lw or pix.height() != lh:
@@ -2198,17 +2313,10 @@ class VHSCapture(QMainWindow):
             self._log_event("resume", "Content resumed", "new segment started")
 
     def _on_segment_split(self, path: str, elapsed: float):
-        # Handle audio device tracking
-        if path.endswith(":audio:"):
-            device = path.split(":audio:", 1)[1]
-            self._log_event("info", "Audio capture started", f"device: {device}")
-            return
-
-        # Audio mux completion signal
+        # Audio mux / clip finalization signal
         if path.endswith(":muxed"):
             real = path[:-6]
-            self._log_event("info", "Audio muxed", Path(real).name)
-            # Refresh the item's size since mux may have changed file size
+            self._log_event("info", "Clip finalized", Path(real).name)
             item = self._clips.get(real)
             if item:
                 def _refresh():
@@ -2222,28 +2330,16 @@ class VHSCapture(QMainWindow):
             return
 
         # Normal segment split
-        self._clips[path] = None   # placeholder while audio mux runs
-        clip_num = len(self._clips)
-        self.stat_clips.setText(str(clip_num))
+        clip_num = len(self._clips) + 1
         name = Path(path).name
         self._log_event("split", f"New segment: {name}", f"t={elapsed:.1f}s")
-        item = QListWidgetItem(f"  {clip_num:02d}  {name}   —")
+        item = QListWidgetItem(f"  {clip_num:02d}  {name}   recording…")
         item.setData(Qt.ItemDataRole.UserRole, path)
         item.setToolTip(path)
         self.clips_list.addItem(item)
         self._clips[path] = item
+        self.stat_clips.setText(str(len(self._clips)))
         self.clips_list.scrollToBottom()
-
-        # Update with size in background after file settles
-        def _update_size():
-            time.sleep(1.5)
-            try:
-                sz = Path(path).stat().st_size
-                if sz > 0:
-                    self._clip_size_updated.emit(item, name, sz / 1024 / 1024)
-            except Exception:
-                pass
-        threading.Thread(target=_update_size, daemon=True).start()
 
     def _open_clip_folder(self, item: QListWidgetItem):
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -2259,7 +2355,9 @@ class VHSCapture(QMainWindow):
 
     def _update_clip_item(self, item: QListWidgetItem, name: str, size_mb: float):
         """Update a clip list item with human-readable size, called via signal from bg thread."""
-        text = f"{item.text().split('  ', 1)[0]}  {name}  ({size_mb:.1f} MB)"
+        current_text = item.text().strip()
+        clip_num = current_text.split("  ", 1)[0] if "  " in current_text else "01"
+        text = f"  {clip_num}  {name}  ({size_mb:.1f} MB)"
         item.setText(text)
         item.setForeground(QColor(MUTED))
 
@@ -2349,7 +2447,7 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
 
     # Set application icon (window title bar, taskbar, exe)
-    _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vhs_capture.ico")
+    _icon_path = resource_path("vhs_capture.ico")
     if os.path.exists(_icon_path):
         app.setWindowIcon(QIcon(_icon_path))
 

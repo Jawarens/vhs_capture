@@ -4,19 +4,27 @@ Quick test to verify icon integration works at both build and runtime
 """
 import os
 import sys
+import re
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 def test_icon_exists():
     """Test that the icon file exists"""
     icon_path = "vhs_capture.ico"
-    if not os.path.exists(icon_path):
-        print("PASS: Icon file exists: vhs_capture.ico")
-        return False
-    return True
+    if os.path.exists(icon_path):
+        print("✅ Icon file exists: vhs_capture.ico")
+        return True
+    print("❌ FAIL: Icon file missing: vhs_capture.ico")
+    return False
 
 def test_spec_includes_icon():
     """Test that .spec file includes the icon"""
     spec_path = "VHS Capture.spec"
-    with open(spec_path, 'r') as f:
+    with open(spec_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     if "('vhs_capture.ico', '.')" not in content:
@@ -24,16 +32,16 @@ def test_spec_includes_icon():
         return False
     print("✅ .spec includes icon in datas: ('vhs_capture.ico', '.')")
 
-    if "icon='vhs_capture.ico'" not in content:
+    if not re.search(r"icon=\[?['\"]vhs_capture\.ico['\"]\]?", content):
         print("❌ FAIL: .spec missing icon parameter")
         return False
-    print("✅ .spec includes icon parameter: icon='vhs_capture.ico'")
+    print("✅ .spec includes icon parameter")
     return True
 
 def test_app_sets_icon():
     """Test that the application references the icon"""
     py_path = "vhs_capture.py"
-    with open(py_path, 'r') as f:
+    with open(py_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     if 'vhs_capture.ico' not in content:

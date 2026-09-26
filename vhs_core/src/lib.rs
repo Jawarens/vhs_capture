@@ -117,12 +117,18 @@ fn bgr_to_rgb<'py>(py: Python<'py>, buf: &[u8]) -> PyResult<Bound<'py, PyBytes>>
     let len = buf.len();
     let out = py.allow_threads(|| {
         let mut v = Vec::with_capacity(len);
-        // SAFETY: we write every byte before returning
+        let chunks = buf.chunks_exact(3);
+        let remainder = chunks.remainder();
+        // SAFETY: every byte up to len is written by chunks_exact_mut or copy_from_slice
         unsafe { v.set_len(len); }
-        for (src, dst) in buf.chunks_exact(3).zip(v.chunks_exact_mut(3)) {
+        for (src, dst) in chunks.zip(v.chunks_exact_mut(3)) {
             dst[0] = src[2];   // R ← B
             dst[1] = src[1];   // G ← G
             dst[2] = src[0];   // B ← R
+        }
+        if !remainder.is_empty() {
+            let offset = len - remainder.len();
+            v[offset..].copy_from_slice(remainder);
         }
         v
     });

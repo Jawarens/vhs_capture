@@ -7,6 +7,12 @@ import subprocess
 import os
 from pathlib import Path
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 def check_dependency(name, import_path=None, message=""):
     """Check if a Python dependency is installed."""
     try:
@@ -77,8 +83,11 @@ def main():
     print("🔧 Build Dependencies:")
     all_ok &= check_dependency("setuptools", "setuptools")
     all_ok &= check_dependency("wheel", "wheel")
-    all_ok &= check_dependency("mypy", "mypy", "(optional - type checking)")
-    all_ok &= check_dependency("ruff", "ruff", "(optional - linting)")
+
+    print()
+    print("🛠️  Development Dependencies (Optional):")
+    check_dependency("mypy", "mypy", "(optional - type checking)")
+    check_dependency("ruff", "ruff", "(optional - linting)")
 
     print()
     print("💾 System Tools:")
