@@ -32,10 +32,19 @@ python -m PyInstaller "VHS Capture.spec" --noconfirm
 
 ## 🎯 Features
 
-✅ **Modern Codecs:** AV1, HEVC, H.264 with CRF quality controls
+✅ **Precision A/V Sync & Drop Protection:** Real-time wall-clock sync inserting duplicate frames when capture cards stutter, plus `aresample=async=1000` to eliminate audio drift
+✅ **VHS Native Standards:** True 4:3 SD profiles for PAL (720×576 @ 25fps) and NTSC (720×480 @ 29.97fps) with correct aspect ratio tags
+✅ **Motion-Adaptive Deinterlacing:** Integrated `bwdif` (standard and 50p/60p smooth motion) and `yadif` filters
+✅ **Head-Switching Noise Masking:** Eliminates the flickering static band in the bottom 12 scanlines with a clean black bar
+✅ **Multi-Signal Auto-Split:** Detects VHS blue screen, blank black screen (commercial/cut marks), and analog static noise
+✅ **Unattended Tape-End Auto-Stop:** Automatically stops and finalizes recording when blank screen and audio silence persist
+✅ **DirectShow Hardware Settings:** Dedicated dialog button to switch between Composite and S-Video and adjust hardware Proc Amp
+✅ **Audio Enhancements:** Mono-to-stereo channel duplication (Left to both), 50/60Hz mains ground hum filter, and EBU R128 `loudnorm`
+✅ **Lossless Archival Master:** Full support for `FFV1` with lossless FLAC audio in MKV alongside modern AV1, HEVC, and H.264
+✅ **Real-Time Disk Space Guard:** Live free disk space and recording time monitor with emergency auto-stop under 1.5 GB
+✅ **Frame Snapshot Capture:** Instant still image grab (`Ctrl+S`) saved directly to PNG
+✅ **CMX 3600 EDL & Chapter Export:** Generate Edit Decision Lists and MKV chapters for video editing software and media servers
 ✅ **Hardware Acceleration:** NVENC (RTX 3000+) and QuickSync (Intel 6th+ Gen) support
-✅ **Auto-Split:** Detects VHS blue screens and splits video automatically
-✅ **Audio Meter:** Real-time microphone level monitoring
 ✅ **Tape Timer:** Optional automatic stop after configured duration (30m/45m/60m/90m/120m)
 ✅ **Multi-Platform:** Windows, Linux, macOS (via PyQt6 and Rust)
 
@@ -119,23 +128,40 @@ python -m PyInstaller "VHS Capture.spec" --noconfirm
 
 ---
 
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Space` | Toggle Start / Stop recording |
+| `Return` / `Enter` | Force manual segment split |
+| `Ctrl+S` | Save full-resolution frame snapshot (PNG) |
+| `Ctrl+O` | Open camera picker dialog |
+
+---
+
 ## Settings
 
 | Setting | Description |
 |---|---|
-| Camera index | 0 = first webcam, 1 = second, etc. Your capture card usually appears as 1 or 2 |
-| Resolution | Match your capture card's output (1280×720 is a good default for VHS) |
-| FPS | 25 for PAL tapes (Europe), 30 for NTSC (US/Japan) |
-| Encoder | `libsvtav1` is fastest AV1; `libaom-av1` is best quality but slow |
-| Quality (CRF) | Lower = better quality, larger files. 24–32 is a good range for VHS |
-| Blue threshold | % of pixels that must be blue to trigger detection. Lower if your tape's blue screen is dark/grey-blue |
-| Min blue duration | How long the blue screen must persist before it counts (avoids false triggers on brief colour bursts) |
+| Camera index | 0 = default webcam, 1/2 = USB capture card |
+| Resolution | PAL (720×576 4:3), NTSC (720×480 4:3), HD (1280×720), or Full HD (1920×1080) |
+| FPS | 25 for PAL tapes, 29.97 for NTSC |
+| Deinterlace | `bwdif` (25/30p), `bwdif 2x` (smooth 50/60p), or `yadif` |
+| Head-switching mask | Replaces noisy bottom 12 scanlines with solid black |
+| Audio Channels | Stereo, Mono (L duplicated to both), Mono (R duplicated to both) |
+| Hum Filter | 65Hz highpass filter removing 50Hz/60Hz ground-loop mains hum |
+| Normalize Audio | EBU R128 `loudnorm` standard loudness leveling |
+| Encoder | NVENC (AV1/HEVC/H264), QuickSync, SVT-AV1, x265, x264, or Lossless FFV1 |
+| Quality (CRF) | Lower = higher quality. 15=Archive, 24=High, 28=Balanced |
+| Blue / Black / Static | Configurable threshold and duration for auto-splitting |
+| Tape End Auto-Stop | Stops recording when blank screen + audio silence persist (default 30s) |
 
 ---
 
 ## Tips
 
-- **Capture card**: if you're using a USB capture card, it will show up as a camera. Try index 1 or 2 if 0 is your webcam
-- **PAL vs NTSC**: set FPS to 25 for European VHS tapes, 29.97 or 30 for US/Japanese
-- **Blue screen colour**: some VHS decks show a darker or slightly grey-blue. Lower the blue threshold to ~45–50% if it isn't being detected
-- **AV1 playback**: VLC, MPV, and most modern players support AV1. Windows 11 supports it natively
+- **S-Video vs Composite**: Click **"Device settings"** to switch your capture card between Composite (Yellow RCA) and S-Video. S-Video provides significantly cleaner color with zero dot crawl.
+- **Interlacing**: Analog VHS is interlaced. Enable `bwdif 2x` to deinterlace 50 fields/sec into 50 progressive frames per second for ultra-smooth tape playback.
+- **PAL vs NTSC**: Choose 720×576 @ 25fps for European PAL tapes, or 720×480 @ 29.97fps for US/Japanese NTSC tapes.
+- **Preservation Masters**: For true archival preservation before editing or restoration, select the **FFV1 Lossless Archival Master** profile.
+

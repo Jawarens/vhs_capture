@@ -5,6 +5,27 @@ All notable changes to VHS Capture are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-09-27
+
+### Added
+- **Precision A/V synchronization & drop-frame protection**: Wall-clock timestamp matching dynamically detects when capture cards or tape creases drop frames, inserting duplicate frames to maintain strict 1:1 video-to-audio sync across multi-hour captures.
+- **Audio drift correction**: Added `-af aresample=async=1000` to audio muxing pipeline to resample minor clock drift between USB audio clocks and video feeds.
+- **Native VHS PAL & NTSC standards**: Added native resolution profiles for PAL (720×576 @ 25fps) and NTSC (720×480 @ 29.97fps) alongside 4:3 DAR metadata.
+- **Motion-adaptive deinterlacing**: Integrated `bwdif` (standard and 2x double-rate smooth motion) and `yadif` filters to eliminate interlacing comb artifacts on motion.
+- **Head-switching noise masking**: Optional filter masking the bottom 12 noisy scanlines with a clean solid black bar, eliminating flickering artifacts and saving bitrate.
+- **Multi-signal detection**: Added black/blank screen detection and analog static/snow RF noise detection in addition to VHS blue screen.
+- **Unattended End-of-Tape auto-stop**: Automatically stops and finalizes recording when blank screen (blue/black/static) and audio silence persist for a configurable duration (default 30s).
+- **DirectShow hardware settings dialog**: New "⚙️ Device settings" button triggering the capture card's native DirectShow property sheet on Windows to switch between Composite and S-Video inputs and tune hardware brightness/contrast.
+- **Enhanced audio controls**: Added mono-to-stereo channel duplication (Left to both / Right to both), 50Hz/60Hz mains ground-loop hum filter, and EBU R128 loudness normalization (`loudnorm`).
+- **Lossless Archival Master (FFV1)**: Added FFV1 codec in an MKV container with lossless FLAC audio for preservation-grade captures.
+- **Real-time disk space guard**: Live free disk space and estimated recording hours monitoring, with automatic emergency stop if free space drops below 1.5 GB.
+- **Frame snapshot capture**: Button and `Ctrl+S` shortcut to save full-resolution lossless PNG frame stills.
+- **CMX 3600 EDL & MKV chapter export**: Automatic export of industry-standard CMX 3600 Edit Decision Lists and FFmpeg chapter metadata files for video editors and media servers.
+
+### Fixed
+- **Removed obsolete patch script**: Cleaned up leftover `fix_audio.py`.
+- **NumPy saturation division warning**: Replaced unsafe array division in color analysis with safe `np.divide(..., where=...)`.
+
 ## [0.3.1] — 2026-09-26
 
 ### Added
