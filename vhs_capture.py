@@ -67,13 +67,62 @@ except Exception:
     _AUDIO_AVAILABLE = False
 
 # ── Resolve FFmpeg binary ──────────────────────────────────────────────────
-# Priority: system PATH → imageio-ffmpeg bundled binary → error at runtime
+# Priority: hardware-capable system FFmpeg → PATH → imageio-ffmpeg bundled binary → error
+def _system_ffmpeg() -> str | None:
+    """
+    Find a system FFmpeg that supports hw encoders (NVENC/QSV).
+    Checks PATH first, then common Windows install locations.
+    """
+    found = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if found:
+        return found
+
+    if sys.platform == "win32":
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+        prog_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        user_profile = os.environ.get("USERPROFILE", "")
+        prog_data = os.environ.get("ProgramData", "C:\\ProgramData")
+
+        candidates = [
+            os.path.join(prog_data, "chocolatey", "bin", "ffmpeg.exe"),
+            os.path.join(local_app, "Microsoft", "WinGet", "Packages",
+                         "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
+                         "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "ProgramData", "chocolatey", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "tools", "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join(user_profile, "scoop", "apps", "ffmpeg", "current",
+                         "bin", "ffmpeg.exe"),
+            os.path.join(prog_data, "scoop", "apps", "ffmpeg",
+                         "current", "bin", "ffmpeg.exe"),
+            os.path.join(prog_files, "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join(prog_files_x86, "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "ffmpeg", "bin", "ffmpeg.exe"),
+            os.path.join("C:\\", "ffmpeg", "ffmpeg.exe"),
+            os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
+        ]
+
+        winget_pkg_dir = os.path.join(local_app, "Microsoft", "WinGet", "Packages")
+        if os.path.isdir(winget_pkg_dir):
+            for entry in os.listdir(winget_pkg_dir):
+                if "ffmpeg" in entry.lower() or "gyan" in entry.lower():
+                    for root, _, files in os.walk(os.path.join(winget_pkg_dir, entry)):
+                        for f in files:
+                            if f.lower() == "ffmpeg.exe":
+                                candidates.append(os.path.join(root, f))
+
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+
+    return None
+
 def _find_ffmpeg() -> str:
-    """Return the path to a working ffmpeg binary."""
-    # 1. Check if ffmpeg is already on PATH
-    if shutil.which("ffmpeg"):
-        return "ffmpeg"
-    # 2. Try imageio-ffmpeg bundled binary (works inside PyInstaller .exe too)
+    """Return the path to a working ffmpeg binary, prioritizing hardware-capable system FFmpeg."""
+    sys_ff = _system_ffmpeg()
+    if sys_ff:
+        return sys_ff
+    # Fallback to imageio-ffmpeg bundled binary (works inside PyInstaller .exe too)
     try:
         import imageio_ffmpeg
         exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -81,7 +130,6 @@ def _find_ffmpeg() -> str:
             return exe
     except Exception:
         pass
-    # 3. Fallback
     return "ffmpeg"
 
 FFMPEG_BIN = _find_ffmpeg()
@@ -359,53 +407,6 @@ class AudioMeterThread(QThread):
 #  Hardware encoder detection + profiles
 # ─────────────────────────────────────────────
 
-def _system_ffmpeg() -> str | None:
-    """
-    Find a system FFmpeg that supports hw encoders (NVENC/QSV).
-    Checks PATH first, then common Windows install locations.
-    """
-    found = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if found:
-        return found
-
-    if sys.platform == "win32":
-        local_app = os.environ.get("LOCALAPPDATA", "")
-        prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-        prog_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-        user_profile = os.environ.get("USERPROFILE", "")
-
-        candidates = [
-            os.path.join(local_app, "Microsoft", "WinGet", "Packages",
-                         "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
-                         "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ProgramData", "chocolatey", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "tools", "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join(user_profile, "scoop", "apps", "ffmpeg", "current",
-                         "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ProgramData", "scoop", "apps", "ffmpeg",
-                         "current", "bin", "ffmpeg.exe"),
-            os.path.join(prog_files, "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join(prog_files_x86, "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ffmpeg", "ffmpeg.exe"),
-            os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
-        ]
-
-        winget_pkg_dir = os.path.join(local_app, "Microsoft", "WinGet", "Packages")
-        if os.path.isdir(winget_pkg_dir):
-            for entry in os.listdir(winget_pkg_dir):
-                if "ffmpeg" in entry.lower() or "gyan" in entry.lower():
-                    for root, _, files in os.walk(os.path.join(winget_pkg_dir, entry)):
-                        for f in files:
-                            if f.lower() == "ffmpeg.exe":
-                                candidates.append(os.path.join(root, f))
-
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-
-    return None
-
 
 # Full encoder profiles including Lossless Archival Master (FFV1)
 _ENCODER_PROFILES = [
@@ -415,8 +416,9 @@ _ENCODER_PROFILES = [
         "is_hw": True, "pixfmt": "yuv420p",
         "requires_hw_ffmpeg": True, "probe_size": "256x256",
         "args": lambda q, w, h: [
-            "-gpu", "0", "-preset", "p4", "-tune", "hq",
-            "-rc", "constqp", "-qp", str(q), "-surfaces", "8",
+            "-gpu", "0", "-preset", "p5", "-tune", "hq",
+            "-rc", "constqp", "-qp", str(q), "-surfaces", "16",
+            "-spatial-aq", "1", "-temporal-aq", "1",
         ],
     },
     {
@@ -424,8 +426,9 @@ _ENCODER_PROFILES = [
         "is_hw": True, "pixfmt": "yuv420p",
         "requires_hw_ffmpeg": True, "probe_size": "256x256",
         "args": lambda q, w, h: [
-            "-gpu", "0", "-preset", "p4", "-tune", "hq",
-            "-rc", "constqp", "-qp", str(q), "-surfaces", "8",
+            "-gpu", "0", "-preset", "p5", "-tune", "hq",
+            "-rc", "constqp", "-qp", str(q), "-surfaces", "16",
+            "-spatial-aq", "1", "-temporal-aq", "1",
         ],
     },
     {
@@ -433,8 +436,9 @@ _ENCODER_PROFILES = [
         "is_hw": True, "pixfmt": "yuv420p",
         "requires_hw_ffmpeg": True, "probe_size": "256x256",
         "args": lambda q, w, h: [
-            "-gpu", "0", "-preset", "p4", "-tune", "hq",
-            "-rc", "constqp", "-qp", str(q), "-surfaces", "8",
+            "-gpu", "0", "-preset", "p5", "-tune", "hq",
+            "-rc", "constqp", "-qp", str(q), "-surfaces", "16",
+            "-spatial-aq", "1", "-temporal-aq", "1",
         ],
     },
     # ── Intel QuickSync ──────────────────────────────────────────────
@@ -499,7 +503,7 @@ _ENCODER_PROFILES = [
         "is_hw": False, "pixfmt": "yuv420p",
         "requires_hw_ffmpeg": False, "probe_size": "64x64",
         "args": lambda q, w, h: [
-            "-level", "3", "-g", "1", "-slices", "4", "-slicecrc", "1", "-threads", "0",
+            "-level", "3", "-g", "1", "-slices", "16", "-slicecrc", "1", "-threads", "0",
         ],
     },
 ]
@@ -651,18 +655,33 @@ class FFmpegWriter:
 
         # Build video filter chain (deinterlace + head switching mask)
         vf_filters = []
-        if self.deinterlace == "bwdif":
-            vf_filters.append("bwdif=mode=0:parity=-1:deint=1")
-        elif self.deinterlace == "bwdif_2x":
-            vf_filters.append("bwdif=mode=1:parity=-1:deint=1")
-        elif self.deinterlace == "yadif":
-            vf_filters.append("yadif=mode=0:parity=-1:deint=1")
-
         if self.mask_head_switching:
             # Replaces the bottom 12 noisy scanlines with a clean solid black bar
             vf_filters.append("drawbox=y=ih-12:h=12:color=black:t=fill")
 
+        is_nvenc = "nvenc" in enc
+        has_cuda_filters = False
+        if is_nvenc and self.deinterlace in ("bwdif", "bwdif_2x", "yadif"):
+            # Accelerate deinterlacing directly on CUDA cores (offloads CPU to GPU)
+            vf_filters.append("format=nv12")
+            vf_filters.append("hwupload_cuda")
+            if self.deinterlace == "bwdif":
+                vf_filters.append("bwdif_cuda=mode=0:parity=-1:deint=1")
+            elif self.deinterlace == "bwdif_2x":
+                vf_filters.append("bwdif_cuda=mode=1:parity=-1:deint=1")
+            elif self.deinterlace == "yadif":
+                vf_filters.append("yadif_cuda=mode=0:parity=-1:deint=1")
+            has_cuda_filters = True
+        else:
+            if self.deinterlace == "bwdif":
+                vf_filters.append("bwdif=mode=0:parity=-1:deint=1")
+            elif self.deinterlace == "bwdif_2x":
+                vf_filters.append("bwdif=mode=1:parity=-1:deint=1")
+            elif self.deinterlace == "yadif":
+                vf_filters.append("yadif=mode=0:parity=-1:deint=1")
+
         vf_args = ["-vf", ",".join(vf_filters)] if vf_filters else []
+        pixfmt_args = [] if has_cuda_filters else ["-pix_fmt", pixfmt]
 
         cmd = [
             ff, "-y",
@@ -673,8 +692,7 @@ class FFmpegWriter:
             "-i", "pipe:0",
         ] + vf_args + [
             "-c:v", enc,
-        ] + enc_args + [
-            "-pix_fmt", pixfmt,
+        ] + enc_args + pixfmt_args + [
             "-aspect", self.aspect_ratio,
         ]
 
@@ -3060,6 +3078,10 @@ class VHSCapture(QMainWindow):
                 f"<span style='color:{col};font-weight:bold'>{msg}</span>{det}")
         self.log_view.append(html)
         self.log_view.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _clear_log(self):
+        self._log.clear()
+        self.log_view.clear()
 
     def _show_about_dialog(self):
         """Displays system, framework, and component versions information dialog."""
