@@ -31,16 +31,18 @@ import shutil
 import queue as _queue
 from datetime import datetime, timedelta
 from pathlib import Path
+import platform
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSlider, QGroupBox, QTextEdit, QComboBox,
     QSpinBox, QDoubleSpinBox, QFileDialog, QFrame, QProgressBar, QCheckBox,
     QGridLayout, QDialog, QDialogButtonBox, QListWidget,
-    QListWidgetItem, QLineEdit, QScrollArea, QSizePolicy
+    QListWidgetItem, QLineEdit, QScrollArea, QSizePolicy, QInputDialog
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QMutex, QMutexLocker
+    Qt, QThread, pyqtSignal, QTimer, QMutex, QMutexLocker,
+    PYQT_VERSION_STR, qVersion
 )
 from PyQt6.QtGui import (
     QImage, QPixmap, QColor, QPalette, QTextCursor, QPainter, QPen, QIcon,
@@ -177,6 +179,86 @@ def analyse_blue_ratio(frame: np.ndarray, sample_w: int = 80, sample_h: int = 45
 # ─────────────────────────────────────────────
 
 _SETTINGS_PATH = Path.home() / ".vhs_capture_settings.json"
+_PROFILES_DIR  = Path.home() / ".vhs_capture_profiles"
+
+_FACTORY_PRESETS: dict[str, dict] = {
+    "PAL — Hauppauge USB-Live2 (Optimal)": {
+        "resolution": "PAL (720x576)",
+        "fps": 25.0,
+        "aspect_ratio": "4:3",
+        "deinterlace": "bwdif",
+        "mask_head_switching": True,
+        "audio_hum_filter": True,
+        "audio_normalize": True,
+        "audio_channel_mode": "stereo",
+        "auto_split_blue": True,
+        "auto_split_black": False,
+        "auto_stop_tape_end": True,
+        "tape_end_timeout": 30,
+        "crf": 23,
+    },
+    "PAL — Universum VHS (bwdif 50fps)": {
+        "resolution": "PAL (720x576)",
+        "fps": 25.0,
+        "aspect_ratio": "4:3",
+        "deinterlace": "bwdif",
+        "mask_head_switching": True,
+        "audio_hum_filter": True,
+        "audio_normalize": False,
+        "audio_channel_mode": "stereo",
+        "auto_split_blue": True,
+        "auto_split_black": False,
+        "auto_stop_tape_end": True,
+        "tape_end_timeout": 30,
+        "crf": 26,
+    },
+    "Archival Master (Lossless FFV1 + PCM)": {
+        "resolution": "PAL (720x576)",
+        "fps": 25.0,
+        "aspect_ratio": "4:3",
+        "deinterlace": "bwdif",
+        "mask_head_switching": False,
+        "audio_hum_filter": False,
+        "audio_normalize": False,
+        "audio_channel_mode": "stereo",
+        "auto_split_blue": False,
+        "auto_split_black": False,
+        "auto_stop_tape_end": True,
+        "tape_end_timeout": 45,
+        "crf": 0,
+        "encoder": "ffv1",
+    },
+    "NTSC — 60fps Fluid": {
+        "resolution": "NTSC (720x480)",
+        "fps": 29.97,
+        "aspect_ratio": "4:3",
+        "deinterlace": "bwdif",
+        "mask_head_switching": True,
+        "audio_hum_filter": True,
+        "audio_normalize": True,
+        "audio_channel_mode": "stereo",
+        "auto_split_blue": True,
+        "auto_split_black": False,
+        "auto_stop_tape_end": True,
+        "tape_end_timeout": 30,
+        "crf": 24,
+    },
+    "Compact Web Share (AV1 / H.264 Fast)": {
+        "resolution": "PAL (720x576)",
+        "fps": 25.0,
+        "aspect_ratio": "4:3",
+        "deinterlace": "bwdif",
+        "mask_head_switching": True,
+        "audio_hum_filter": True,
+        "audio_normalize": True,
+        "audio_channel_mode": "stereo",
+        "auto_split_blue": True,
+        "auto_split_black": False,
+        "auto_stop_tape_end": True,
+        "tape_end_timeout": 30,
+        "crf": 30,
+    },
+}
 
 def load_settings() -> dict:
     try:
@@ -189,6 +271,42 @@ def save_settings(d: dict):
         _SETTINGS_PATH.write_text(json.dumps(d, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+def list_profiles() -> list[str]:
+    """Return all available preset names followed by saved user profile names."""
+    names = list(_FACTORY_PRESETS.keys())
+    if _PROFILES_DIR.is_dir():
+        for p in sorted(_PROFILES_DIR.glob("*.json")):
+            stem = p.stem
+            if stem not in names:
+                names.append(stem)
+    return names
+
+def load_profile(name: str) -> dict:
+    if name in _FACTORY_PRESETS:
+        return dict(_FACTORY_PRESETS[name])
+    p = _PROFILES_DIR / f"{name}.json"
+    if p.is_file():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+def save_profile(name: str, data: dict):
+    _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    p = _PROFILES_DIR / f"{name}.json"
+    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+def delete_profile(name: str) -> bool:
+    p = _PROFILES_DIR / f"{name}.json"
+    if p.is_file():
+        try:
+            p.unlink()
+            return True
+        except Exception:
+            pass
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -1574,6 +1692,10 @@ class VHSCapture(QMainWindow):
         QShortcut(QKeySequence("Enter"), self, self._manual_split)
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_camera)
         QShortcut(QKeySequence("Ctrl+S"), self, self._take_snapshot)
+        QShortcut(QKeySequence("F1"), self, self._show_about_dialog)
+        QShortcut(QKeySequence("Ctrl+I"), self, self._show_about_dialog)
+        QShortcut(QKeySequence("Ctrl+P"), self, self._manage_profiles_dialog)
+        QShortcut(QKeySequence("Ctrl+Shift+S"), self, self._save_profile_dialog)
 
     def _make_btn(self, text, primary=False, danger=False):
         b = QPushButton(text)
@@ -1685,12 +1807,67 @@ class VHSCapture(QMainWindow):
         hdr_row.addLayout(hdr_col)
         hdr_row.addStretch()
 
+        # Preset / Profile selector
+        lbl_prof = QLabel("Profile:")
+        lbl_prof.setStyleSheet(f"color:{MUTED};font-size:11px;font-weight:600")
+        hdr_row.addWidget(lbl_prof)
+
+        self.combo_profile = QComboBox()
+        self.combo_profile.setToolTip("Select a predefined hardware preset or custom saved profile")
+        self.combo_profile.setFixedHeight(24)
+        self.combo_profile.setMinimumWidth(180)
+        self.combo_profile.setStyleSheet(
+            f"QComboBox{{background:{SURFACE};border:1px solid {BORDER};border-radius:6px;"
+            f"color:{TEXT};font-size:11px;font-weight:500;padding:2px 8px}}"
+            f"QComboBox:hover{{border-color:#454c5e}}"
+            f"QComboBox QAbstractItemView{{background:{SURFACE};border:1px solid {BORDER};"
+            f"color:{TEXT};selection-background-color:#2a3a55}}"
+        )
+        self._refresh_profile_list()
+        self.combo_profile.activated.connect(self._on_profile_activated)
+        hdr_row.addWidget(self.combo_profile)
+
+        self.btn_save_profile = QPushButton("💾 Save")
+        self.btn_save_profile.setToolTip("Save current settings as a profile (Ctrl+Shift+S)")
+        self.btn_save_profile.setFixedHeight(24)
+        self.btn_save_profile.setStyleSheet(
+            f"QPushButton{{color:{TEXT};background:{SURFACE};border:1px solid {BORDER};"
+            f"border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff}}"
+        )
+        self.btn_save_profile.clicked.connect(self._save_profile_dialog)
+        hdr_row.addWidget(self.btn_save_profile)
+
+        self.btn_manage_profile = QPushButton("⚙")
+        self.btn_manage_profile.setToolTip("Manage saved profiles (Delete / Explore)")
+        self.btn_manage_profile.setFixedHeight(24)
+        self.btn_manage_profile.setFixedWidth(24)
+        self.btn_manage_profile.setStyleSheet(
+            f"QPushButton{{color:{MUTED};background:{SURFACE};border:1px solid {BORDER};"
+            f"border-radius:6px;font-size:12px;font-weight:600}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff}}"
+        )
+        self.btn_manage_profile.clicked.connect(self._manage_profiles_dialog)
+        hdr_row.addWidget(self.btn_manage_profile)
+
         self.lbl_disk_header = QLabel("💾 — GB free")
         self.lbl_disk_header.setStyleSheet(
             f"color:{MUTED};background:{SURFACE};border:1px solid {BORDER};"
             f"border-radius:10px;padding:2px 10px;font-size:11px;font-weight:600"
         )
         hdr_row.addWidget(self.lbl_disk_header)
+
+        self.btn_about = QPushButton("ℹ Info")
+        self.btn_about.setToolTip("System & Version Information (F1)")
+        self.btn_about.setFixedHeight(24)
+        self.btn_about.setStyleSheet(
+            f"QPushButton{{color:{MUTED};background:{SURFACE};border:1px solid {BORDER};"
+            f"border-radius:10px;padding:2px 10px;font-size:11px;font-weight:600}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff}}"
+        )
+        self.btn_about.clicked.connect(self._show_about_dialog)
+        hdr_row.addWidget(self.btn_about)
+
         left.addLayout(hdr_row)
 
         # Video preview card
@@ -2297,37 +2474,236 @@ class VHSCapture(QMainWindow):
         }
 
     def _current_settings(self) -> dict:
+        cur_prof = ""
+        if hasattr(self, "combo_profile") and self.combo_profile.currentIndex() >= 0:
+            cur_prof = self.combo_profile.currentData() or ""
         return {
             **self._get_config(),
             "resolution":         self.combo_res.currentText(),
             "tape_timer_enabled": self.chk_tape_timer.isChecked(),
             "tape_timer_mins":    self.spin_tape_mins.value(),
+            "active_profile":     cur_prof,
         }
 
     def _restore_settings(self, cfg: dict):
+        if "output_dir" in cfg:
+            self._output_dir = cfg["output_dir"]
         self.lbl_outdir.setText(self._output_dir)
-        self.edit_title.setText(cfg.get("title_prefix", ""))
-        self.edit_part.setText(cfg.get("part_prefix", ""))
+        if "title_prefix" in cfg:
+            self.edit_title.setText(cfg.get("title_prefix", ""))
+        if "part_prefix" in cfg:
+            self.edit_part.setText(cfg.get("part_prefix", ""))
 
-        saved_res = cfg.get("resolution", "")
-        idx = self.combo_res.findText(saved_res)
-        if idx >= 0:
-            self.combo_res.setCurrentIndex(idx)
+        if "resolution" in cfg:
+            saved_res = cfg.get("resolution", "")
+            idx = self.combo_res.findText(saved_res)
+            if idx >= 0:
+                self.combo_res.setCurrentIndex(idx)
 
-        self.spin_fps.setValue(float(cfg.get("fps", 25.0)))
-        self.sl_crf.setValue(cfg.get("crf", 28))
-        self.sl_thresh.setValue(int(cfg.get("blue_threshold", 0.60) * 100))
-        self.sl_mindur.setValue(int(cfg.get("min_blue_seconds", 1.5) * 10))
-        self.chk_mask_head.setChecked(cfg.get("mask_head_switching", True))
-        self.chk_hum_filter.setChecked(cfg.get("audio_hum_filter", True))
-        self.chk_normalize.setChecked(cfg.get("audio_normalize", False))
-        self.chk_auto_split_blue.setChecked(cfg.get("auto_split_blue", True))
-        self.chk_auto_split_black.setChecked(cfg.get("auto_split_black", False))
-        self.chk_auto_stop_tape_end.setChecked(cfg.get("auto_stop_tape_end", True))
-        self.spin_tape_end_timeout.setValue(int(cfg.get("tape_end_timeout", 30)))
-        self.chk_tape_timer.setChecked(cfg.get("tape_timer_enabled", False))
-        self.spin_tape_mins.setValue(cfg.get("tape_timer_mins", 60))
-        self._sync_tape_preset_btns(cfg.get("tape_timer_mins", 60))
+        if "fps" in cfg:
+            self.spin_fps.setValue(float(cfg.get("fps", 25.0)))
+        if "crf" in cfg:
+            self.sl_crf.setValue(int(cfg.get("crf", 28)))
+
+        if "aspect_ratio" in cfg:
+            self.combo_aspect.setCurrentIndex(1 if cfg.get("aspect_ratio") == "16:9" else 0)
+
+        if "deinterlace" in cfg:
+            d_val = cfg.get("deinterlace", "")
+            for i in range(self.combo_deint.count()):
+                if d_val.lower() in self.combo_deint.itemText(i).lower():
+                    self.combo_deint.setCurrentIndex(i)
+                    break
+
+        if "encoder" in cfg:
+            enc = cfg.get("encoder", "")
+            for i in range(self.combo_enc.count()):
+                if enc.lower() in self.combo_enc.itemText(i).lower():
+                    self.combo_enc.setCurrentIndex(i)
+                    break
+
+        if "audio_channel_mode" in cfg:
+            m = cfg.get("audio_channel_mode", "stereo")
+            if m == "mono_left":
+                self.combo_audio_channels.setCurrentIndex(1)
+            elif m == "mono_right":
+                self.combo_audio_channels.setCurrentIndex(2)
+            else:
+                self.combo_audio_channels.setCurrentIndex(0)
+
+        if "blue_threshold" in cfg:
+            self.sl_thresh.setValue(int(cfg.get("blue_threshold", 0.60) * 100))
+        if "min_blue_seconds" in cfg:
+            self.sl_mindur.setValue(int(cfg.get("min_blue_seconds", 1.5) * 10))
+        if "mask_head_switching" in cfg:
+            self.chk_mask_head.setChecked(cfg.get("mask_head_switching", True))
+        if "audio_hum_filter" in cfg:
+            self.chk_hum_filter.setChecked(cfg.get("audio_hum_filter", True))
+        if "audio_normalize" in cfg:
+            self.chk_normalize.setChecked(cfg.get("audio_normalize", False))
+        if "auto_split_blue" in cfg:
+            self.chk_auto_split_blue.setChecked(cfg.get("auto_split_blue", True))
+        if "auto_split_black" in cfg:
+            self.chk_auto_split_black.setChecked(cfg.get("auto_split_black", False))
+        if "auto_stop_tape_end" in cfg:
+            self.chk_auto_stop_tape_end.setChecked(cfg.get("auto_stop_tape_end", True))
+        if "tape_end_timeout" in cfg:
+            self.spin_tape_end_timeout.setValue(int(cfg.get("tape_end_timeout", 30)))
+        if "tape_timer_enabled" in cfg:
+            self.chk_tape_timer.setChecked(cfg.get("tape_timer_enabled", False))
+        if "tape_timer_mins" in cfg:
+            self.spin_tape_mins.setValue(cfg.get("tape_timer_mins", 60))
+            self._sync_tape_preset_btns(cfg.get("tape_timer_mins", 60))
+
+        if "active_profile" in cfg and hasattr(self, "combo_profile"):
+            act = cfg.get("active_profile", "")
+            for i in range(self.combo_profile.count()):
+                if self.combo_profile.itemData(i) == act:
+                    self.combo_profile.blockSignals(True)
+                    self.combo_profile.setCurrentIndex(i)
+                    self.combo_profile.blockSignals(False)
+                    break
+
+    def _refresh_profile_list(self, select_name: str = ""):
+        if not hasattr(self, "combo_profile"):
+            return
+        self.combo_profile.blockSignals(True)
+        self.combo_profile.clear()
+        all_profiles = list_profiles()
+        for p in all_profiles:
+            prefix = "⭐ " if p in _FACTORY_PRESETS else "👤 "
+            self.combo_profile.addItem(f"{prefix}{p}", p)
+
+        if select_name:
+            for i in range(self.combo_profile.count()):
+                if self.combo_profile.itemData(i) == select_name:
+                    self.combo_profile.setCurrentIndex(i)
+                    break
+        self.combo_profile.blockSignals(False)
+
+    def _on_profile_activated(self, index: int):
+        profile_name = self.combo_profile.itemData(index)
+        if not profile_name:
+            return
+        cfg = load_profile(profile_name)
+        if cfg:
+            self._restore_settings(cfg)
+            self._log_event("info", f"Loaded profile: {profile_name}", "Capture settings applied")
+            self._save_settings()
+
+    def _save_profile_dialog(self):
+        current_data = self._current_settings()
+        curr_prof = self.combo_profile.currentData() if hasattr(self, "combo_profile") else "My Custom Profile"
+        if curr_prof in _FACTORY_PRESETS or not curr_prof:
+            curr_prof = "My Custom Profile"
+        name, ok = QInputDialog.getText(
+            self, "Save Profile", "Enter profile name:",
+            QLineEdit.EchoMode.Normal, curr_prof
+        )
+        if ok and name.strip():
+            clean_name = name.strip()
+            if clean_name in _FACTORY_PRESETS:
+                clean_name = clean_name + " (Custom)"
+            save_profile(clean_name, current_data)
+            self._refresh_profile_list(select_name=clean_name)
+            self._save_settings()
+            self._log_event("info", f"Saved profile '{clean_name}'", "Profile saved to presets list")
+
+    def _manage_profiles_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Manage Capture Profiles")
+        dlg.setFixedSize(440, 360)
+        _icon_path = resource_path("vhs_capture.ico")
+        if os.path.exists(_icon_path):
+            dlg.setWindowIcon(QIcon(_icon_path))
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 18, 18, 18)
+        lay.setSpacing(10)
+
+        lbl = QLabel("User Saved Profiles:")
+        lbl.setStyleSheet(f"color:{TEXT};font-weight:600;font-size:13px")
+        lay.addWidget(lbl)
+
+        list_widget = QListWidget()
+        list_widget.setStyleSheet(
+            f"QListWidget{{background:{BG};border:1px solid {BORDER};border-radius:6px;"
+            f"color:{TEXT};font-size:12px;padding:4px}}"
+            f"QListWidget::item:selected{{background:#2a3a55;color:#fff}}"
+        )
+
+        user_profiles = []
+        if _PROFILES_DIR.is_dir():
+            user_profiles = sorted([p.stem for p in _PROFILES_DIR.glob("*.json")])
+
+        if not user_profiles:
+            list_widget.addItem("(No custom user profiles saved yet)")
+            list_widget.setEnabled(False)
+        else:
+            for up in user_profiles:
+                list_widget.addItem(up)
+            list_widget.setCurrentRow(0)
+        lay.addWidget(list_widget, 1)
+
+        btn_box = QHBoxLayout()
+        btn_del = QPushButton("Delete Selected")
+        btn_del.setEnabled(bool(user_profiles))
+        btn_del.setFixedHeight(30)
+        btn_del.setStyleSheet(
+            f"QPushButton{{border:1px solid {BORDER};border-radius:6px;padding:2px 12px;"
+            f"background:{SURFACE};color:{RED};font-weight:600;font-size:12px}}"
+            f"QPushButton:hover{{background:{RED_BG};border-color:{RED}}}"
+            f"QPushButton:disabled{{color:#555}}"
+        )
+
+        def _do_del():
+            item = list_widget.currentItem()
+            if item and item.text() in user_profiles:
+                del_name = item.text()
+                delete_profile(del_name)
+                row = list_widget.row(item)
+                list_widget.takeItem(row)
+                user_profiles.remove(del_name)
+                self._refresh_profile_list()
+                self._log_event("info", f"Deleted profile: {del_name}")
+                if not user_profiles:
+                    list_widget.addItem("(No custom user profiles saved yet)")
+                    list_widget.setEnabled(False)
+                    btn_del.setEnabled(False)
+
+        btn_del.clicked.connect(_do_del)
+        btn_box.addWidget(btn_del)
+
+        btn_open = QPushButton("Open Folder")
+        btn_open.setFixedHeight(30)
+        btn_open.setStyleSheet(
+            f"QPushButton{{border:1px solid {BORDER};border-radius:6px;padding:2px 12px;"
+            f"background:{SURFACE};color:{TEXT};font-size:12px}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e}}"
+        )
+        def _do_open():
+            _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(str(_PROFILES_DIR))
+            else:
+                subprocess.Popen(["xdg-open", str(_PROFILES_DIR)])
+
+        btn_open.clicked.connect(_do_open)
+        btn_box.addWidget(btn_open)
+
+        btn_box.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.setFixedHeight(30)
+        btn_close.setStyleSheet(
+            f"QPushButton{{border:1px solid {BORDER};border-radius:6px;padding:2px 16px;"
+            f"background:{SURFACE};color:{TEXT};font-size:12px;font-weight:500}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e}}"
+        )
+        btn_close.clicked.connect(dlg.accept)
+        btn_box.addWidget(btn_close)
+
+        lay.addLayout(btn_box)
+        dlg.exec()
 
     def _save_settings(self):
         save_settings(self._current_settings())
@@ -2685,9 +3061,136 @@ class VHSCapture(QMainWindow):
         self.log_view.append(html)
         self.log_view.moveCursor(QTextCursor.MoveOperation.End)
 
-    def _clear_log(self):
-        self._log.clear()
-        self.log_view.clear()
+    def _show_about_dialog(self):
+        """Displays system, framework, and component versions information dialog."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About VHS Capture")
+        dlg.setFixedSize(540, 480)
+        _icon_path = resource_path("vhs_capture.ico")
+        if os.path.exists(_icon_path):
+            dlg.setWindowIcon(QIcon(_icon_path))
+
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.setContentsMargins(20, 20, 20, 20)
+        dlg_layout.setSpacing(14)
+
+        # Header with icon and app title
+        top_row = QHBoxLayout()
+        if os.path.exists(_icon_path):
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(QIcon(_icon_path).pixmap(48, 48))
+            top_row.addWidget(icon_lbl)
+            top_row.addSpacing(12)
+
+        vbox_title = QVBoxLayout()
+        t_lbl = QLabel(f"VHS Capture v{__version__}")
+        t_lbl.setStyleSheet(f"color:{TEXT};font-size:18px;font-weight:700")
+        s_lbl = QLabel("Professional VHS Tape Digitizer & Auto-Splitter")
+        s_lbl.setStyleSheet(f"color:{MUTED};font-size:12px")
+        vbox_title.addWidget(t_lbl)
+        vbox_title.addWidget(s_lbl)
+        top_row.addLayout(vbox_title)
+        top_row.addStretch()
+        dlg_layout.addLayout(top_row)
+
+        # Details group box
+        details_box = QGroupBox("System & Framework Versions")
+        details_box.setStyleSheet(
+            f"QGroupBox{{color:{TEXT};font-weight:600;border:1px solid {BORDER};"
+            f"border-radius:8px;margin-top:10px;padding-top:12px}}"
+            f"QGroupBox::title{{subcontrol-origin:margin;left:10px;padding:0 5px}}"
+        )
+        grid = QGridLayout(details_box)
+        grid.setContentsMargins(14, 14, 14, 14)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(8)
+
+        # Probe components
+        py_ver = f"{sys.version.split()[0]} ({platform.architecture()[0]})"
+        qt_ver = f"PyQt6 {PYQT_VERSION_STR} (Qt {qVersion()})"
+        cv_ver = getattr(cv2, "__version__", "Unknown")
+
+        # Rust core
+        if _RUST_AVAILABLE:
+            rust_status = "v0.4.0 (Active · SIMD acceleration enabled)"
+        else:
+            rust_status = "Fallback mode (Pure Python/NumPy)"
+
+        # Audio
+        if _AUDIO_AVAILABLE:
+            audio_ver = f"v{getattr(sd, '__version__', 'Installed')}"
+        else:
+            audio_ver = "Unavailable"
+
+        # FFmpeg
+        ff_path = _system_ffmpeg() or FFMPEG_BIN
+        ff_ver_str = "Bundled (imageio-ffmpeg)"
+        if ff_path:
+            try:
+                res = subprocess.run([ff_path, "-version"], capture_output=True, text=True, timeout=2, **_NO_WINDOW)
+                first_line = res.stdout.splitlines()[0] if res.stdout else ""
+                if "ffmpeg version" in first_line:
+                    ff_ver_str = first_line.split("Copyright")[0].strip()
+            except Exception:
+                pass
+
+        os_str = f"{platform.system()} {platform.release()} (Build {platform.version()})"
+
+        specs = [
+            ("Application Version:", f"v{__version__}"),
+            ("Rust Core Engine:", rust_status),
+            ("FFmpeg Encoder:", ff_ver_str),
+            ("Python Runtime:", py_ver),
+            ("GUI Framework:", qt_ver),
+            ("OpenCV Library:", cv_ver),
+            ("Audio Subsystem:", f"sounddevice {audio_ver}"),
+            ("Operating System:", os_str),
+        ]
+
+        for row, (label, val) in enumerate(specs):
+            l = QLabel(label)
+            l.setStyleSheet(f"color:{MUTED};font-weight:500;font-size:12px")
+            v = QLabel(val)
+            v.setStyleSheet(f"color:{TEXT};font-weight:600;font-size:12px")
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(l, row, 0)
+            grid.addWidget(v, row, 1)
+
+        dlg_layout.addWidget(details_box)
+
+        # Action buttons
+        btn_row = QHBoxLayout()
+        btn_copy = QPushButton("Copy Specs")
+        btn_copy.setFixedHeight(32)
+        btn_copy.setStyleSheet(
+            f"QPushButton{{border:1px solid {BORDER};border-radius:6px;padding:0 12px;"
+            f"background:{SURFACE};color:{TEXT};font-size:12px;font-weight:500}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff}}"
+        )
+
+        def _copy_specs():
+            text_lines = [f"{k} {v}" for k, v in specs]
+            clip_text = "VHS Capture System Information:\n" + "\n".join(text_lines)
+            QApplication.clipboard().setText(clip_text)
+            btn_copy.setText("✓ Copied!")
+            QTimer.singleShot(2000, lambda: btn_copy.setText("Copy Specs"))
+
+        btn_copy.clicked.connect(_copy_specs)
+        btn_row.addWidget(btn_copy)
+        btn_row.addStretch()
+
+        btn_close = QPushButton("Close")
+        btn_close.setFixedHeight(32)
+        btn_close.setStyleSheet(
+            f"QPushButton{{border:1px solid {BORDER};border-radius:6px;padding:0 16px;"
+            f"background:{SURFACE};color:{TEXT};font-size:12px;font-weight:500}}"
+            f"QPushButton:hover{{background:#262933;border-color:#454c5e;color:#fff}}"
+        )
+        btn_close.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_close)
+
+        dlg_layout.addLayout(btn_row)
+        dlg.exec()
 
     def closeEvent(self, event):
         self._save_settings()

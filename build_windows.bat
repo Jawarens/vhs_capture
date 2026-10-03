@@ -51,6 +51,10 @@ if errorlevel 1 (
 
 :: ── Clean stale PyInstaller/Python caches ────────────────────────────
 echo.
+echo Closing any running instances of VHS Capture...
+taskkill /f /im "VHS Capture.exe" >nul 2>&1
+taskkill /f /im "VHS Capture v*.exe" >nul 2>&1
+
 echo Cleaning stale build caches...
 if exist "%~dp0build" (
     rmdir /s /q "%~dp0build"
@@ -135,7 +139,11 @@ if errorlevel 1 (
 
 :: ── Build standalone exe ──────────────────────────────────────────
 echo.
-echo Building standalone executable...
+echo Ensuring icons and Windows version metadata are current...
+python generate_icon.py >> "%LOGFILE%" 2>&1
+
+echo.
+echo Building standalone executable with Windows version info and icons...
 
 python -m PyInstaller ^
     --onefile ^
@@ -144,6 +152,7 @@ python -m PyInstaller ^
     --add-data "README.md;." ^
     --add-data "vhs_capture.ico;." ^
     --icon "vhs_capture.ico" ^
+    --version-file "file_version_info.txt" ^
     --hidden-import "cv2" ^
     --hidden-import "numpy" ^
     --hidden-import "vhs_core" ^
@@ -165,11 +174,19 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
+:: Create version-named copy so Explorer immediately presents fresh icon without path cache collision
+copy "%~dp0dist\VHS Capture.exe" "%~dp0dist\VHS Capture v0.4.0.exe" >nul 2>&1
+
+:: Refresh Windows Explorer shell icon cache
+python -c "import ctypes, os; ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None); p = os.path.abspath('dist/VHS Capture.exe'); ctypes.windll.shell32.SHChangeNotify(0x00002000, 0x0005, p, None) if os.path.exists(p) else None" >nul 2>&1
+
 echo.
 echo ============================================================
 echo BUILD COMPLETE
 echo.
-echo Executable : dist\VHS Capture.exe
+echo Executables:
+echo   - dist\VHS Capture.exe (with embedded icon & version resource)
+echo   - dist\VHS Capture v0.4.0.exe
 echo.
 echo FFmpeg : bundled via imageio-ffmpeg (libsvtav1/libx264)
 echo For GPU encoding (NVENC/QSV) also install:

@@ -11,6 +11,8 @@ Outputs:
 import sys
 import os
 import math
+import struct
+import io
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import (
     QGuiApplication, QImage, QPainter, QPainterPath, QColor,
@@ -378,26 +380,74 @@ def render_icon(canvas_size=1024):
     img.save(png_path)
     print(f"Rendered high-res preview icon: {png_path}")
 
-    # Generate multi-size ICO with Pillow
-    sizes = [256, 128, 64, 48, 32, 16]
-    pil_images = []
-    
-    # Convert QImage to PIL Image
+    # Generate bulletproof multi-size Windows ICO
+    # Windows Explorer natively requires uncompressed 32-bit DIB bitmaps for 16, 32, 48, 64, 128
+    # and compressed PNG for 256. This ensures crisp rendering in all Explorer views (Details, List, Tiles, etc.)
     buffer = img.bits().asstring(img.sizeInBytes())
     master_pil = Image.frombuffer('RGBA', (canvas_size, canvas_size), buffer, 'raw', 'BGRA', 0, 1)
 
-    for sz in sizes:
-        resized = master_pil.resize((sz, sz), Image.Resampling.LANCZOS)
-        pil_images.append(resized)
-
     ico_path = os.path.join(os.path.dirname(__file__), "vhs_capture.ico")
-    pil_images[0].save(
-        ico_path,
-        format='ICO',
-        sizes=[(s, s) for s in sizes],
-        append_images=pil_images[1:]
-    )
-    print(f"Generated multi-size ICO: {ico_path} with sizes: {sizes}")
+    save_windows_ico(master_pil, ico_path, sizes=(16, 32, 48, 64, 128, 256))
+    print(f"Generated multi-size ICO: {ico_path} with sizes: [16, 32, 48, 64, 128, 256]")
+
+def save_windows_ico(master_image: Image.Image, output_path: str, sizes=(16, 32, 48, 64, 128, 256)):
+    """
+    Creates a standard, bulletproof Windows ICO file:
+    - Sizes <= 128: Uncompressed 32-bit BGRA DIB bitmaps (compatible with all Windows versions and Explorer views)
+    - Size 256: Compressed PNG (supported by Windows Vista through Windows 11)
+    """
+    entries = []
+    for size in sizes:
+        resized = master_image.resize((size, size), Image.Resampling.LANCZOS).convert("RGBA")
+        if size == 256:
+            png_io = io.BytesIO()
+            resized.save(png_io, format="PNG", optimize=True)
+            img_data = png_io.getvalue()
+        else:
+            xor_data = bytearray()
+            for y in range(size - 1, -1, -1):
+                for x in range(size):
+                    r, g, b, a = resized.getpixel((x, y))
+                    xor_data.extend([b, g, r, a])
+            row_bytes = (size + 31) // 32 * 4
+            and_data = bytearray(row_bytes * size)
+            for y in range(size - 1, -1, -1):
+                row_idx = (size - 1 - y) * row_bytes
+                for x in range(size):
+                    r, g, b, a = resized.getpixel((x, y))
+                    if a < 128:
+                        byte_pos = row_idx + (x // 8)
+                        bit_pos = 7 - (x % 8)
+                        and_data[byte_pos] |= (1 << bit_pos)
+
+            header = struct.pack(
+                '<IIIHHIIIIII',
+                40, size, size * 2, 1, 32, 0,
+                len(xor_data) + len(and_data),
+                0, 0, 0, 0
+            )
+            img_data = header + bytes(xor_data) + bytes(and_data)
+
+        entries.append((size, 32, img_data))
+
+    offset = 6 + len(entries) * 16
+    ico_out = bytearray()
+    ico_out.extend(struct.pack('<HHH', 0, 1, len(entries)))
+
+    for size, bpp, data in entries:
+        w_byte = 0 if size >= 256 else size
+        h_byte = 0 if size >= 256 else size
+        ico_out.extend(struct.pack(
+            '<BBBBHHII',
+            w_byte, h_byte, 0, 0, 1, bpp, len(data), offset
+        ))
+        offset += len(data)
+
+    for _, _, data in entries:
+        ico_out.extend(data)
+
+    with open(output_path, "wb") as f:
+        f.write(ico_out)
 
 def create_vhs_icon():
     """Compatibility entry point."""
