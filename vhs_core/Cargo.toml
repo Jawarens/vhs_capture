@@ -8,7 +8,7 @@ name = "vhs_core"
 crate-type = ["cdylib"]   # Python extension (.pyd / .so)
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]
 opt-level = 3

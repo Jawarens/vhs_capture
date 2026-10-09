@@ -145,6 +145,13 @@ if errorlevel 1 (
 echo.
 echo Building Rust extension (vhs_core)...
 cd "%~dp0vhs_core"
+
+:: Enable PyO3 ABI3 forward compatibility for Python 3.14+
+set "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"
+
+:: Clean stale wheels so only the fresh Python 3.14/ABI3 wheel is installed
+if exist "target\wheels" del /q "target\wheels\*.whl" >nul 2>&1
+
 %MATURIN% build --release >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo ERROR: Rust build failed. See %LOGFILE%
@@ -156,7 +163,9 @@ if errorlevel 1 (
 
 :: Install the wheel
 set "WHEEL="
-for /f "delims=" %%f in ('dir /b /s "target\wheels\*.whl" 2^>nul') do set "WHEEL=%%f"
+for /f "delims=" %%f in ('dir /b /s /o:-d "target\wheels\*.whl" 2^>nul') do (
+    if not defined WHEEL set "WHEEL=%%f"
+)
 if "%WHEEL%"=="" (
     echo ERROR: No wheel produced. See %LOGFILE%
     cd "%~dp0"
@@ -169,7 +178,7 @@ echo vhs_core installed.
 
 :: ── Verify vhs_core loads ─────────────────────────────────────────
 echo.
-python -c "import vhs_core; print(' vhs_core OK')"
+python -c "import vhs_core; assert hasattr(vhs_core, 'detect_blue'); print(' vhs_core OK')"
 if errorlevel 1 (
     echo WARNING: vhs_core failed to import -- app runs in fallback mode.
 )

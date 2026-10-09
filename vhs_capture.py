@@ -144,8 +144,10 @@ _NO_WINDOW = (
 # ── Try to load the Rust extension; fall back to numpy gracefully ──────────
 try:
     import vhs_core as _vhs_core
-    _RUST_AVAILABLE = True
-except ImportError:
+    _RUST_AVAILABLE = hasattr(_vhs_core, "detect_blue") and hasattr(_vhs_core, "FrameQueue")
+    if not _RUST_AVAILABLE:
+        _vhs_core = None
+except (ImportError, Exception):
     _vhs_core = None
     _RUST_AVAILABLE = False
 

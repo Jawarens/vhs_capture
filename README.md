@@ -14,7 +14,7 @@
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10 - 3.14+ (tested on Python 3.14)
 - FFmpeg with AV1 support (libsvtav1 recommended)
 - **Windows (for building Rust extension / standalone EXE):**
   - Rust (`rustup target add x86_64-pc-windows-msvc`)
