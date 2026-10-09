@@ -2,14 +2,27 @@
 
 🎬 Record from webcam to modern AV1/HEVC with automatic tape splitting on blue screen detection
 
+<p align="center">
+  <a href="https://ko-fi.com/F0T028FQJQ">
+    <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="ko-fi" />
+  </a>
+</p>
+
 ![Application Screenshot](placeholder.png)
 
 > Capture, detect, and split VHS tapes automatically with professional quality encoding!
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10 - 3.14+ (tested on Python 3.14)
 - FFmpeg with AV1 support (libsvtav1 recommended)
+- **Windows (for building Rust extension / standalone EXE):**
+  - Rust (`rustup target add x86_64-pc-windows-msvc`)
+  - **Microsoft C++ Build Tools** (MSVC linker `link.exe` & Windows SDK):
+    ```powershell
+    winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    ```
+    *(Note: Running directly via `python vhs_capture.py` works without Rust using pure-Python fallback mode).*
 
 
 ## 📋 Quick Commands
@@ -18,16 +31,13 @@
 # Install dependencies
 pip install -r requirements.txt
 
-# Build Rust extension (REQUIRED for best performance)
+# Option A: Run directly in pure-Python fallback mode (no Rust/compiler required)
+python vhs_capture.py
+
+# Option B: Build Rust extension & standalone executable (requires MSVC C++ Build Tools + Rust)
 ./build_windows.bat  # Windows
 # or: bash build_linux.sh    # Linux
 # or: bash build_mac.sh      # macOS
-
-# Run application
-python vhs_capture.py
-
-# Build Windows executable
-python -m PyInstaller "VHS Capture.spec" --noconfirm
 ```
 
 ## 🎯 Features
@@ -164,4 +174,12 @@ python -m PyInstaller "VHS Capture.spec" --noconfirm
 - **Interlacing**: Analog VHS is interlaced. Enable `bwdif 2x` to deinterlace 50 fields/sec into 50 progressive frames per second for ultra-smooth tape playback.
 - **PAL vs NTSC**: Choose 720×576 @ 25fps for European PAL tapes, or 720×480 @ 29.97fps for US/Japanese NTSC tapes.
 - **Preservation Masters**: For true archival preservation before editing or restoration, select the **FFV1 Lossless Archival Master** profile.
+
+---
+
+## ☕ Support the Project
+
+If this project saves you time or helps preserve your memories, please consider supporting development!
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F0T028FQJQ)
 

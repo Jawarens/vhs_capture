@@ -23,9 +23,28 @@ for /f "delims=" %%p in ('python -c "import sysconfig; print(sysconfig.get_path(
 :: Prepend user Scripts + cargo to PATH so maturin/pyinstaller are reachable
 set "PATH=%PYUSERSCRIPTS%;%PYSCRIPTS%;%USERPROFILE%\.cargo\bin;%PATH%"
 
+:: Remove coreutils / Git usr\bin from PATH so GNU link.exe does not shadow MSVC linker
+set "PATH=!PATH:C:\Program Files\coreutils\bin;=!"
+set "PATH=!PATH:C:\Program Files\coreutils\bin=!"
+set "PATH=!PATH:C:\Program Files\Git\usr\bin;=!"
+set "PATH=!PATH:C:\Program Files\Git\usr\bin=!"
+
 echo Python: %PYEXE%
 echo Scripts: %PYUSERSCRIPTS%
 echo.
+
+:: ── Detect MSVC C++ Build Tools ────────────────────────────────────
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VCVARS="
+if exist "!VSWHERE!" (
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
+    )
+)
+if defined VCVARS (
+    echo Initializing MSVC environment: !VCVARS!
+    call "!VCVARS!" >nul 2>&1
+)
 
 :: ── Rust ──────────────────────────────────────────────────────────
 cargo --version >nul 2>&1
@@ -48,6 +67,36 @@ if errorlevel 1 (
 ) else (
     echo Rust found.
 )
+
+:: Check for MSVC linker
+set "NEED_MSVC=0"
+where link.exe >nul 2>&1
+if errorlevel 1 (
+    set "NEED_MSVC=1"
+) else (
+    :: Verify link.exe is not GNU/uutils link (which accepts --version)
+    link.exe --version >nul 2>&1
+    if not errorlevel 1 set "NEED_MSVC=1"
+)
+if "!NEED_MSVC!"=="0" goto msvc_ok
+
+echo.
+echo ==============================================================
+echo WARNING: Microsoft Visual C++ Build Tools not found.
+echo Rust requires the MSVC linker [link.exe] and Windows SDK.
+echo.
+echo To install, run this in an Administrator PowerShell:
+echo   winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+echo.
+echo Or install Visual Studio with "Desktop development with C++".
+echo.
+echo NOTE: You can run VHS Capture directly without compiling Rust:
+echo   python vhs_capture.py
+echo ==============================================================
+echo.
+pause & exit /b 1
+
+:msvc_ok
 
 :: ── Clean stale PyInstaller/Python caches ────────────────────────────
 echo.
@@ -96,6 +145,13 @@ if errorlevel 1 (
 echo.
 echo Building Rust extension (vhs_core)...
 cd "%~dp0vhs_core"
+
+:: Enable PyO3 ABI3 forward compatibility for Python 3.14+
+set "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"
+
+:: Clean stale wheels so only the fresh Python 3.14/ABI3 wheel is installed
+if exist "target\wheels" del /q "target\wheels\*.whl" >nul 2>&1
+
 %MATURIN% build --release >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo ERROR: Rust build failed. See %LOGFILE%
@@ -107,7 +163,9 @@ if errorlevel 1 (
 
 :: Install the wheel
 set "WHEEL="
-for /f "delims=" %%f in ('dir /b /s "target\wheels\*.whl" 2^>nul') do set "WHEEL=%%f"
+for /f "delims=" %%f in ('dir /b /s /o:-d "target\wheels\*.whl" 2^>nul') do (
+    if not defined WHEEL set "WHEEL=%%f"
+)
 if "%WHEEL%"=="" (
     echo ERROR: No wheel produced. See %LOGFILE%
     cd "%~dp0"
@@ -120,7 +178,7 @@ echo vhs_core installed.
 
 :: ── Verify vhs_core loads ─────────────────────────────────────────
 echo.
-python -c "import vhs_core; print(' vhs_core OK')"
+python -c "import vhs_core; assert hasattr(vhs_core, 'detect_blue'); print(' vhs_core OK')"
 if errorlevel 1 (
     echo WARNING: vhs_core failed to import -- app runs in fallback mode.
 )

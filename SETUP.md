@@ -29,7 +29,13 @@ The application uses a Rust extension for high-performance video processing.
 Run the build script according to your platform:
 
 #### **Windows:**
-Run the PowerShell build script:
+Requires **Microsoft C++ Build Tools** (for the MSVC `link.exe` linker and Windows SDK). If not installed:
+```powershell
+winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+Or install [Visual Studio Community](https://visualstudio.microsoft.com/) with the **"Desktop development with C++"** workload.
+
+Run the build script:
 ```powershell
 # Make sure you have Rust installed: https://rust-lang.org/tools/install
 rustup target add x86_64-pc-windows-msvc
@@ -39,8 +45,8 @@ rustup target add x86_64-pc-windows-msvc
 ```
 or manually:
 ```bash
-cargo build --release --manifest-path=rust/vhs_core/Cargo.toml
-pip install rust/vhs_core/target/release/vhs_core
+cargo build --release --manifest-path=vhs_core/Cargo.toml
+pip install vhs_core/target/release/vhs_core
 ```
 
 #### **Linux:**
@@ -193,6 +199,19 @@ Check if vhs_core loads correctly:
 import vhs_core
 print("Rust module loaded successfully!")
 ```
+
+### ❌ "linking with `link.exe` failed" / "2 values required for '<FILES> <FILES>' but 41 were provided"
+**Cause:**
+Rust's MSVC target (`x86_64-pc-windows-msvc`) requires Microsoft Visual C++ Build Tools (`link.exe` and Windows SDK). If MSVC is missing, Rust either cannot find `link.exe` or erroneously falls back to GNU/uutils `coreutils\bin\link.exe` (or Git's `usr/bin/link.exe`), which is the POSIX hard-link command rather than the C linker.
+
+**Solution:**
+1. Install Microsoft C++ Build Tools in an Administrator PowerShell:
+   ```powershell
+   winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   ```
+   *(Or download the installer from https://visualstudio.microsoft.com/visual-cpp-build-tools/ and check "Desktop development with C++").*
+2. Re-run `./build_windows.bat` (the script automatically filters out non-MSVC `link.exe` executables and loads `vcvars64.bat`).
+3. *(Alternative)*: You can also run the app without compiling Rust by running `python vhs_capture.py` directly (using the built-in pure-Python fallback).
 
 ### ❌ "Camera not detected"
 **Solutions:**

@@ -1,7 +1,7 @@
 # Core application dependencies
-PyQt6>=6.4.0,<6.6.0  # Stable GUI framework with PyInstaller compatibility
-opencv-python>=4.7.0  # Webcam capture and frame processing
-numpy>=1.24.0        # Frame operations and blue detection
+PyQt6>=6.4.0            # GUI framework (compatible with Python 3.10 - 3.14+)
+opencv-python>=4.7.0    # Webcam capture and frame processing
+numpy>=1.24.0          # Frame operations and blue detection
 
 # Audio support (optional - audio meter disabled if unavailable)
 sounddevice>=0.4.0
@@ -10,9 +10,10 @@ sounddevice>=0.4.0
 imageio-ffmpeg>=0.4.9
 
 # Build/packaging dependencies
-setuptools>=65.0.0  # For building the Rust extension
-wheel>=0.40.0        # Wheel building support
-cibuildwheel>=2.16    # CI/CD wheel building
+maturin>=1.0.0          # Rust PyO3 extension build tool
+setuptools>=65.0.0      # For building the Rust extension
+wheel>=0.40.0           # Wheel building support
+cibuildwheel>=2.16      # CI/CD wheel building
 
 # Development dependencies
 mypy>=1.0.0
