@@ -2,6 +2,12 @@
 
 🎬 Record from webcam to modern AV1/HEVC with automatic tape splitting on blue screen detection
 
+<p align="center">
+  <a href="https://ko-fi.com/F0T028FQJQ">
+    <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="ko-fi" />
+  </a>
+</p>
+
 ![Application Screenshot](placeholder.png)
 
 > Capture, detect, and split VHS tapes automatically with professional quality encoding!
@@ -168,4 +174,12 @@ python vhs_capture.py
 - **Interlacing**: Analog VHS is interlaced. Enable `bwdif 2x` to deinterlace 50 fields/sec into 50 progressive frames per second for ultra-smooth tape playback.
 - **PAL vs NTSC**: Choose 720×576 @ 25fps for European PAL tapes, or 720×480 @ 29.97fps for US/Japanese NTSC tapes.
 - **Preservation Masters**: For true archival preservation before editing or restoration, select the **FFV1 Lossless Archival Master** profile.
+
+---
+
+## ☕ Support the Project
+
+If this project saves you time or helps preserve your memories, please consider supporting development!
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F0T028FQJQ)
 
