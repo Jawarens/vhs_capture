@@ -10,6 +10,13 @@
 
 - Python 3.10+
 - FFmpeg with AV1 support (libsvtav1 recommended)
+- **Windows (for building Rust extension / standalone EXE):**
+  - Rust (`rustup target add x86_64-pc-windows-msvc`)
+  - **Microsoft C++ Build Tools** (MSVC linker `link.exe` & Windows SDK):
+    ```powershell
+    winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    ```
+    *(Note: Running directly via `python vhs_capture.py` works without Rust using pure-Python fallback mode).*
 
 
 ## 📋 Quick Commands
@@ -18,16 +25,13 @@
 # Install dependencies
 pip install -r requirements.txt
 
-# Build Rust extension (REQUIRED for best performance)
+# Option A: Run directly in pure-Python fallback mode (no Rust/compiler required)
+python vhs_capture.py
+
+# Option B: Build Rust extension & standalone executable (requires MSVC C++ Build Tools + Rust)
 ./build_windows.bat  # Windows
 # or: bash build_linux.sh    # Linux
 # or: bash build_mac.sh      # macOS
-
-# Run application
-python vhs_capture.py
-
-# Build Windows executable
-python -m PyInstaller "VHS Capture.spec" --noconfirm
 ```
 
 ## 🎯 Features
