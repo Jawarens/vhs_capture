@@ -224,6 +224,67 @@ def analyse_blue_ratio(frame: np.ndarray, sample_w: int = 80, sample_h: int = 45
     return analyse_signals(frame, sample_w, sample_h)["blue_ratio"]
 
 
+def probe_clip_is_empty(clip_path: str, min_duration: float = 2.0, min_bytes: int = 150000) -> tuple[bool, str]:
+    """
+    Inspects a recorded clip to determine if it has nothing in it:
+      - File missing or size < min_bytes (unusable/header only)
+      - Zero video/audio streams or duration < min_duration
+      - All sampled frames are blue screen, black screen, or analog static
+    Returns (is_empty: bool, reason: str).
+    """
+    p = Path(clip_path)
+    if not p.exists():
+        return True, "File does not exist"
+
+    try:
+        sz = p.stat().st_size
+    except Exception as e:
+        return True, f"Unreadable file: {e}"
+
+    if sz < min_bytes:
+        return True, f"File too small ({sz} bytes, threshold {min_bytes} bytes)"
+
+    # Probe duration and frame count via OpenCV
+    cap = cv2.VideoCapture(str(p))
+    if not cap.isOpened():
+        return True, "Unable to open video stream"
+
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        dur = (frame_count / fps) if (frame_count > 0 and fps > 0) else 0.0
+
+        if frame_count <= 0 or dur < min_duration:
+            return True, f"Duration too short ({dur:.2f}s, threshold {min_duration}s, {frame_count} frames)"
+
+        # Sample up to 10 frames across the clip to test if there's any active content
+        sample_indices = [
+            int(idx) for idx in np.linspace(0, max(0, frame_count - 1), num=min(10, frame_count), dtype=int)
+        ]
+        non_empty_found = False
+
+        for f_idx in sample_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                continue
+
+            sig = analyse_signals(frame)
+            # If a frame has < 80% blue, < 80% black, and is not pure static noise, it contains real content
+            if sig["blue_ratio"] < 0.80 and sig["black_ratio"] < 0.80 and not sig["is_static"]:
+                non_empty_found = True
+                break
+
+        if not non_empty_found:
+            return True, "All sampled frames were blank (blue screen, black screen, or static)"
+
+        return False, ""
+    except Exception as e:
+        return False, f"Probe error: {e}"
+    finally:
+        cap.release()
+
+
 # ─────────────────────────────────────────────
 #  Settings persistence
 # ─────────────────────────────────────────────
@@ -1652,6 +1713,7 @@ class _AudioScanner(QThread):
 
 class VHSCapture(QMainWindow):
     _clip_size_updated = pyqtSignal(object, str, float)
+    _clip_purged       = pyqtSignal(str, str)  # real_path, reason
 
     def __init__(self):
         super().__init__()
@@ -1692,6 +1754,7 @@ class VHSCapture(QMainWindow):
             pass
 
         self._clip_size_updated.connect(self._update_clip_item)
+        self._clip_purged.connect(self._on_clip_purged)
         self._build_ui()
         self._apply_windows_theme()
         self._restore_settings(cfg)
@@ -2230,6 +2293,14 @@ class VHSCapture(QMainWindow):
         tape_end_row.addWidget(self.spin_tape_end_timeout)
         tape_end_row.addStretch()
         det_lay.addLayout(tape_end_row)
+
+        self.chk_purge_empty = QCheckBox("Auto-purge empty/blank clips when recording stops")
+        self.chk_purge_empty.setChecked(True)
+        self.chk_purge_empty.setToolTip(
+            "Detects and deletes clips that contain only blank/blue/static frames or zero usable duration after recording stops."
+        )
+        self.chk_purge_empty.setStyleSheet(f"color:{MUTED};font-size:13px")
+        det_lay.addWidget(self.chk_purge_empty)
         right.addWidget(det_card)
 
         # 6. Tape Timer
@@ -2300,7 +2371,12 @@ class VHSCapture(QMainWindow):
         btn_edl = self._make_btn("📑  Export EDL & Chapters")
         btn_edl.setFixedHeight(26)
         btn_edl.clicked.connect(self._export_edl_and_chapters)
+        btn_purge_empty = self._make_btn("🗑️  Purge empty")
+        btn_purge_empty.setFixedHeight(26)
+        btn_purge_empty.setToolTip("Scan current saved clips and delete any clips with no content or blank/empty frames")
+        btn_purge_empty.clicked.connect(self._purge_empty_clips_manual)
         clips_btn_row.addWidget(clips_hint, 1)
+        clips_btn_row.addWidget(btn_purge_empty)
         clips_btn_row.addWidget(btn_edl)
         clips_lay.addLayout(clips_btn_row)
         right.addWidget(clips_card)
@@ -2484,6 +2560,7 @@ class VHSCapture(QMainWindow):
             "auto_split_black":    self.chk_auto_split_black.isChecked(),
             "auto_stop_tape_end":  self.chk_auto_stop_tape_end.isChecked(),
             "tape_end_timeout":    float(self.spin_tape_end_timeout.value()),
+            "purge_empty_clips":   self.chk_purge_empty.isChecked(),
             "output_dir":          self._output_dir,
             "title_prefix":        self.edit_title.text().strip(),
             "part_prefix":         self.edit_part.text().strip(),
@@ -2569,6 +2646,8 @@ class VHSCapture(QMainWindow):
             self.chk_auto_stop_tape_end.setChecked(cfg.get("auto_stop_tape_end", True))
         if "tape_end_timeout" in cfg:
             self.spin_tape_end_timeout.setValue(int(cfg.get("tape_end_timeout", 30)))
+        if "purge_empty_clips" in cfg:
+            self.chk_purge_empty.setChecked(cfg.get("purge_empty_clips", True))
         if "tape_timer_enabled" in cfg:
             self.chk_tape_timer.setChecked(cfg.get("tape_timer_enabled", False))
         if "tape_timer_mins" in cfg:
@@ -2933,6 +3012,80 @@ class VHSCapture(QMainWindow):
         self.lbl_tape_remaining.setText("—")
         self._log_event("stop", "Recording stopped",
                         f"{self._seg_count} auto-splits · {len(self._clips)} clips")
+
+        if self.chk_purge_empty.isChecked():
+            # Run scan in background once ffmpeg muxers finish flushing
+            QTimer.singleShot(1200, lambda: self._purge_empty_clips(silent=False))
+
+    def _purge_empty_clips_manual(self):
+        """Manual purge trigger from Saved Clips toolbar."""
+        self._purge_empty_clips(silent=False)
+
+    def _purge_empty_clips(self, silent: bool = False):
+        """Scans current recorded clips and purges any that contain zero content or blank frames."""
+        clips_snapshot = list(self._clips.keys())
+        if not clips_snapshot:
+            if not silent:
+                self._log_event("info", "Purge empty clips", "No clips in list to evaluate")
+            return
+
+        def _worker():
+            purged_any = 0
+            for path_str in clips_snapshot:
+                # Wait briefly if active muxing is finalizing
+                for _ in range(6):
+                    if not Path(path_str + ".mux_tmp" + Path(path_str).suffix).exists():
+                        break
+                    time.sleep(0.3)
+
+                is_empty, reason = probe_clip_is_empty(path_str)
+                if is_empty:
+                    p = Path(path_str)
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception as e:
+                        pass
+                    purged_any += 1
+                    self._clip_purged.emit(path_str, reason)
+
+            if not silent:
+                if purged_any == 0:
+                    self._log_event("info", "Purge check finished", "All saved clips contain valid content")
+                else:
+                    self._log_event("split", f"Purge complete: {purged_any} empty clip(s) removed",
+                                    f"{len(self._clips)} valid clip(s) remaining")
+
+        threading.Thread(target=_worker, daemon=True, name="purge-empty-clips").start()
+
+    def _on_clip_purged(self, real_path: str, reason: str):
+        """UI slot called when an empty clip was detected and deleted from disk."""
+        name = Path(real_path).name
+        item = self._clips.pop(real_path, None)
+        if item:
+            row = self.clips_list.row(item)
+            if row >= 0:
+                self.clips_list.takeItem(row)
+            del item
+
+        # Remove from segment records for EDL/chapters
+        self._segment_records = [r for r in self._segment_records if r[0] != name]
+        self.stat_clips.setText(str(len(self._clips)))
+
+        # Renumber remaining items in UI list
+        for idx in range(self.clips_list.count()):
+            it = self.clips_list.item(idx)
+            if it:
+                it_path = it.data(Qt.ItemDataRole.UserRole)
+                it_name = Path(it_path).name
+                txt = it.text().strip()
+                # Preserve existing size text if present
+                if "(" in txt and txt.endswith(")"):
+                    sz_part = txt[txt.find("("):]
+                    it.setText(f"  {idx+1:02d}  {it_name}  {sz_part}")
+                else:
+                    it.setText(f"  {idx+1:02d}  {it_name}")
+
+        self._log_event("info", f"🗑️ Purged empty clip: {name}", reason)
 
     def _manual_split(self):
         if self._capture and self._recording:
