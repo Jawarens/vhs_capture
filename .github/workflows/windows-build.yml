@@ -1,4 +1,4 @@
-name: Build Windows executable
+name: Build & Release Windows executable
 
 on:
   push:
@@ -12,10 +12,9 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
-      CI: true
       PYTHONUTF8: 1
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: 1
 
@@ -23,52 +22,106 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python (with pip cache)
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Cache Cargo registry and build artifacts
+      - name: Cache Cargo registry & target
         uses: actions/cache@v4
         with:
           path: |
             ~\AppData\Local\cargo\registry
             ~\AppData\Local\cargo\git
-            ~\vhs_capture\vhs_core\target
+            vhs_core\target
           key: ${{ runner.os }}-cargo-${{ hashFiles('vhs_core/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Setup Rust
+      - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install build dependencies
+      - name: Install MSVC dev cmd (make sure link.exe / msbuild available)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Install Python build deps
         shell: powershell
         run: |
           python -m pip install --upgrade pip
           python -m pip install maturin pyinstaller PyQt6 opencv-python numpy sounddevice imageio-ffmpeg
 
-      - name: Install MSVC toolchain
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+      - name: Build Rust extension (vhs_core)
+        shell: powershell
+        run: |
+          Set-Location vhs_core
+          maturin build --release
 
-      - name: Run Windows build script
-        shell: cmd
-        run: build_windows.bat
+      - name: Install produced wheel
+        shell: powershell
+        run: |
+          $wheel = Get-ChildItem -Path ".\vhs_core\target\wheels\*.whl" -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $wheel) { throw "No wheel produced by maturin." }
+          python -m pip install --force-reinstall $wheel.FullName
 
-      - name: Upload build artifact
-        if: always()
+      - name: Generate icon & build standalone EXE
+        shell: powershell
+        run: |
+          python generate_icon.py
+          python -m PyInstaller `
+            --onefile `
+            --windowed `
+            --name "VHS Capture" `
+            --add-data "README.md;." `
+            --add-data "vhs_capture.ico;." `
+            --icon "vhs_capture.ico" `
+            --version-file "file_version_info.txt" `
+            --hidden-import "cv2" `
+            --hidden-import "numpy" `
+            --hidden-import "vhs_core" `
+            --hidden-import "sounddevice" `
+            --hidden-import "imageio_ffmpeg" `
+            --hidden-import "PyQt6.QtCore" `
+            --hidden-import "PyQt6.QtGui" `
+            --hidden-import "PyQt6.QtWidgets" `
+            --collect-all "cv2" `
+            --collect-all "vhs_core" `
+            --collect-all "sounddevice" `
+            --collect-all "imageio_ffmpeg" `
+            vhs_capture.py
+
+      - name: Create versioned ZIP (dist/VHS_Capture_<version>.zip)
+        shell: powershell
+        run: |
+          if (startsWith("${{ github.ref }}", 'refs/tags/')) {
+            $version = "${{ github.ref_name }}"
+          } else {
+            $version = (git rev-parse --short HEAD)
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zipName = "dist/VHS_Capture_$version.zip"
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
+          Compress-Archive -Path "dist\*" -DestinationPath $zipName
+          Write-Output "ZIP -> $zipName"
+
+      - name: Upload artifact (main branch)
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: vhs-capture-windows
-          path: dist/*.exe
+          name: vhs-capture-windows-main-${{ github.sha }}
+          path: dist/*.zip
+          retention-days: 90
 
-      - name: Publish GitHub Release
+      - name: Create GitHub Release and upload ZIP (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: dist/*.zip
           draft: false
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
