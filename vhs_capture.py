@@ -17,7 +17,7 @@ Requires: PyQt6 opencv-python numpy sounddevice imageio-ffmpeg
 FFmpeg is bundled via imageio-ffmpeg if not found on system PATH.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 import sys
 import os

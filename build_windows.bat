@@ -1,6 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: CI guard: when running in CI (Actions) the CI variable will be defined.
+:: Use this to skip interactive pauses and to avoid --user pip installs.
+set "PIP_USER=--user"
+if defined CI set "PIP_USER="
+
 set LOGFILE=%~dp0build_log.txt
 echo Build started %date% %time% > "%LOGFILE%"
 
@@ -14,7 +19,10 @@ echo.
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python not found. Install from https://python.org
-    pause & exit /b 1
+    if not defined CI (
+        pause
+    )
+    exit /b 1
 )
 for /f "delims=" %%p in ('python -c "import sys; print(sys.executable)"') do set "PYEXE=%%p"
 for /f "delims=" %%p in ('python -c "import sysconfig; print(sysconfig.get_path(\"scripts\",\"nt_user\"))"') do set "PYUSERSCRIPTS=%%p"
@@ -53,7 +61,10 @@ if errorlevel 1 (
     curl --proto "=https" --tlsv1.2 -sSf -o rustup-init.exe https://win.rustup.rs/x86_64
     if errorlevel 1 (
         echo ERROR: Could not download rustup. Check your internet.
-        pause & exit /b 1
+        if not defined CI (
+            pause
+        )
+        exit /b 1
     )
     rustup-init.exe -y --default-toolchain stable --no-modify-path
     del rustup-init.exe
@@ -61,7 +72,10 @@ if errorlevel 1 (
     cargo --version >nul 2>&1
     if errorlevel 1 (
         echo ERROR: Rust install failed. Install from https://rustup.rs
-        pause & exit /b 1
+        if not defined CI (
+            pause
+        )
+        exit /b 1
     )
     echo Rust installed.
 ) else (
@@ -94,7 +108,10 @@ echo NOTE: You can run VHS Capture directly without compiling Rust:
 echo   python vhs_capture.py
 echo ==============================================================
 echo.
-pause & exit /b 1
+if not defined CI (
+    pause
+)
+exit /b 1
 
 :msvc_ok
 
@@ -121,13 +138,16 @@ echo Done.
 :: ── Install Python dependencies ──────────────────────────────────
 echo.
 echo Installing Python dependencies...
-python -m pip install --user --upgrade ^
+python -m pip install %PIP_USER% --upgrade ^
     maturin PyQt6 opencv-python numpy ^
     sounddevice imageio-ffmpeg ^
     pyinstaller >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo ERROR: pip install failed. See %LOGFILE%
-    pause & exit /b 1
+    if not defined CI (
+        pause
+    )
+    exit /b 1
 )
 echo Done.
 
@@ -158,7 +178,10 @@ if errorlevel 1 (
     echo.
     powershell -Command "Get-Content '%LOGFILE%' -Tail 30"
     cd "%~dp0"
-    pause & exit /b 1
+    if not defined CI (
+        pause
+    )
+    exit /b 1
 )
 
 :: Install the wheel
@@ -169,10 +192,13 @@ for /f "delims=" %%f in ('dir /b /s /o:-d "target\wheels\*.whl" 2^>nul') do (
 if "%WHEEL%"=="" (
     echo ERROR: No wheel produced. See %LOGFILE%
     cd "%~dp0"
-    pause & exit /b 1
+    if not defined CI (
+        pause
+    )
+    exit /b 1
 )
 echo Installing: %WHEEL%
-python -m pip install --user --force-reinstall "%WHEEL%" >> "%LOGFILE%" 2>&1
+python -m pip install %PIP_USER% --force-reinstall "%WHEEL%" >> "%LOGFILE%" 2>&1
 cd "%~dp0"
 echo vhs_core installed.
 
@@ -195,7 +221,7 @@ if errorlevel 1 (
     echo FFmpeg found on PATH.
 )
 
-:: ── Build standalone exe ──────────────────────────────────────────
+:: ── Build standalone exe ─────────────────────────────────────────
 echo.
 echo Ensuring icons and Windows version metadata are current...
 python generate_icon.py >> "%LOGFILE%" 2>&1
@@ -229,11 +255,14 @@ if errorlevel 1 (
     echo ERROR: PyInstaller failed. See %LOGFILE%
     echo.
     powershell -Command "Get-Content '%LOGFILE%' -Tail 40"
-    pause & exit /b 1
+    if not defined CI (
+        pause
+    )
+    exit /b 1
 )
 
 :: Create version-named copy so Explorer immediately presents fresh icon without path cache collision
-copy "%~dp0dist\VHS Capture.exe" "%~dp0dist\VHS Capture v0.4.0.exe" >nul 2>&1
+copy "%~dp0dist\VHS Capture.exe" "%~dp0dist\VHS Capture v0.4.1.exe" >nul 2>&1
 
 :: Refresh Windows Explorer shell icon cache
 python -c "import ctypes, os; ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None); p = os.path.abspath('dist/VHS Capture.exe'); ctypes.windll.shell32.SHChangeNotify(0x00002000, 0x0005, p, None) if os.path.exists(p) else None" >nul 2>&1
@@ -244,10 +273,12 @@ echo BUILD COMPLETE
 echo.
 echo Executables:
 echo   - dist\VHS Capture.exe (with embedded icon & version resource)
-echo   - dist\VHS Capture v0.4.0.exe
+echo   - dist\VHS Capture v0.4.1.exe
 echo.
 echo FFmpeg : bundled via imageio-ffmpeg (libsvtav1/libx264)
 echo For GPU encoding (NVENC/QSV) also install:
 echo    winget install ffmpeg
 echo ============================================================
-pause
+if not defined CI (
+    pause
+)
