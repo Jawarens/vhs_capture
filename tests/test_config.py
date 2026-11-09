@@ -78,3 +78,4 @@ def test_settings_save_and_load(tmp_path):
     # Corrupt file fallback
     settings_file.write_text("{corrupt json", encoding="utf-8")
     assert load_settings(settings_file) == {}
+

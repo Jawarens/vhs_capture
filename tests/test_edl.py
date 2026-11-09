@@ -70,3 +70,4 @@ def test_generate_chapters():
     assert "START=12500" in chapters
     assert "END=20500" in chapters
     assert "title=Part 2 - clip02.mp4" in chapters
+

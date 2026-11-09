@@ -153,3 +153,4 @@ def delete_profile(name: str, profiles_dir: Path | None = None) -> bool:
         except OSError as e:
             logger.warning("Could not delete profile %s: %s", name, e)
     return False
+
