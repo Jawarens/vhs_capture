@@ -1,1 +1,59 @@
-Build started 2026-10-09 12:06:11,47 
+Build started 2026-10-09 12:31:18,37 
+Requirement already satisfied: maturin in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (1.15.0)
+Requirement already satisfied: PyQt6 in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (6.11.0)
+Requirement already satisfied: opencv-python in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (5.0.0.93)
+Requirement already satisfied: numpy in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (2.5.3)
+Requirement already satisfied: sounddevice in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (0.5.6)
+Requirement already satisfied: imageio-ffmpeg in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (0.6.0)
+Requirement already satisfied: pyinstaller in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (6.22.3)
+Requirement already satisfied: PyQt6-sip<14,>=13.8 in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (from PyQt6) (13.13.0)
+Requirement already satisfied: PyQt6-Qt6<6.12.0,>=6.11.0 in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (from PyQt6) (6.11.2)
+Requirement already satisfied: cffi in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (from sounddevice) (2.1.1)
+Requirement already satisfied: altgraph in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyinstaller) (0.17.5)
+Requirement already satisfied: packaging>=22.0 in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyinstaller) (26.3)
+Requirement already satisfied: pefile>=2022.5.30 in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyinstaller) (2024.8.26)
+Requirement already satisfied: pyinstaller-hooks-contrib>=2026.7 in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyinstaller) (2026.8)
+Requirement already satisfied: pywin32-ctypes>=0.2.1 in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyinstaller) (0.2.3)
+Requirement already satisfied: setuptools>=42.0.0 in C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyinstaller) (84.0.0)
+Requirement already satisfied: pycparser in C:\Users\Diagnos\AppData\Roaming\Python\Python314\site-packages (from cffi->sounddevice) (3.1)
+🐍 Found CPython 3.14 at C:\Users\Diagnos\AppData\Local\Programs\Python\Python314\python.exe
+🔗 Found pyo3 bindings
+📡 Using build options features from pyproject.toml
+   Compiling pyo3-ffi v0.22.6
+   Compiling pyo3-macros-backend v0.22.6
+error: failed to run custom build command for `pyo3-ffi v0.22.6`
+
+Caused by:
+  process didn't exit successfully: `C:\Users\Diagnos\Documents\GitHub\vhs_capture-main\vhs_core\target\release\build\pyo3-ffi-9694296958b23584\build-script-build` (exit code: 1)
+  --- stdout
+  cargo:rustc-check-cfg=cfg(Py_LIMITED_API)
+  cargo:rustc-check-cfg=cfg(PyPy)
+  cargo:rustc-check-cfg=cfg(GraalPy)
+  cargo:rustc-check-cfg=cfg(py_sys_config, values("Py_DEBUG", "Py_REF_DEBUG", "Py_TRACE_REFS", "COUNT_ALLOCS"))
+  cargo:rustc-check-cfg=cfg(invalid_from_utf8_lint)
+  cargo:rustc-check-cfg=cfg(pyo3_disable_reference_pool)
+  cargo:rustc-check-cfg=cfg(pyo3_leak_on_drop_without_reference_pool)
+  cargo:rustc-check-cfg=cfg(diagnostic_namespace)
+  cargo:rustc-check-cfg=cfg(c_str_lit)
+  cargo:rustc-check-cfg=cfg(Py_3_7)
+  cargo:rustc-check-cfg=cfg(Py_3_8)
+  cargo:rustc-check-cfg=cfg(Py_3_9)
+  cargo:rustc-check-cfg=cfg(Py_3_10)
+  cargo:rustc-check-cfg=cfg(Py_3_11)
+  cargo:rustc-check-cfg=cfg(Py_3_12)
+  cargo:rustc-check-cfg=cfg(Py_3_13)
+  cargo:rerun-if-env-changed=PYO3_CROSS
+  cargo:rerun-if-env-changed=PYO3_CROSS_LIB_DIR
+  cargo:rerun-if-env-changed=PYO3_CROSS_PYTHON_VERSION
+  cargo:rerun-if-env-changed=PYO3_CROSS_PYTHON_IMPLEMENTATION
+  cargo:rerun-if-env-changed=PYO3_PRINT_CONFIG
+  cargo:rerun-if-env-changed=PYO3_USE_ABI3_FORWARD_COMPATIBILITY
+
+  --- stderr
+  error: the configured Python interpreter version (3.14) is newer than PyO3's maximum supported version (3.13)
+  = help: please check if an updated version of PyO3 is available. Current version: 0.22.6
+  = help: set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 to suppress this check and build anyway using the stable ABI
+warning: build failed, waiting for other jobs to finish...
+💥 maturin failed
+  Caused by: Failed to build a native library through cargo
+  Caused by: Cargo build finished with "exit code: 101": `"cargo" "rustc" "--profile" "release" "--features" "pyo3/extension-module" "--message-format" "json-render-diagnostics" "--manifest-path" "C:\\Users\\Diagnos\\Documents\\GitHub\\vhs_capture-main\\vhs_core\\Cargo.toml" "--lib"`

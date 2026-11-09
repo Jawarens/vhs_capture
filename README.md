@@ -3,26 +3,21 @@
 🎬 Record from webcam to modern AV1/HEVC with automatic tape splitting on blue screen detection
 
 <p align="center">
+  <img src="vhs_camcorder_icon.png" alt="VHS Capture Icon" width="128" height="128" />
+</p>
+
+<p align="center">
   <a href="https://ko-fi.com/F0T028FQJQ">
     <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="ko-fi" />
   </a>
 </p>
 
-![Application Screenshot](placeholder.png)
-
 > Capture, detect, and split VHS tapes automatically with professional quality encoding!
 
 ## Requirements
 
-- Python 3.10 - 3.14+ (tested on Python 3.14)
+- Python 3.10+
 - FFmpeg with AV1 support (libsvtav1 recommended)
-- **Windows (for building Rust extension / standalone EXE):**
-  - Rust (`rustup target add x86_64-pc-windows-msvc`)
-  - **Microsoft C++ Build Tools** (MSVC linker `link.exe` & Windows SDK):
-    ```powershell
-    winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-    ```
-    *(Note: Running directly via `python vhs_capture.py` works without Rust using pure-Python fallback mode).*
 
 
 ## 📋 Quick Commands
@@ -31,13 +26,15 @@
 # Install dependencies
 pip install -r requirements.txt
 
-# Option A: Run directly in pure-Python fallback mode (no Rust/compiler required)
+# Build Rust extension (REQUIRED for best performance)
+build_windows.bat           # Windows
+# or: bash build_unix.sh    # Linux / macOS
+
+# Run application
 python vhs_capture.py
 
-# Option B: Build Rust extension & standalone executable (requires MSVC C++ Build Tools + Rust)
-./build_windows.bat  # Windows
-# or: bash build_linux.sh    # Linux
-# or: bash build_mac.sh      # macOS
+# Build Windows executable
+python -m PyInstaller "VHS Capture.spec" --noconfirm
 ```
 
 ## 🎯 Features

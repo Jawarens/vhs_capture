@@ -65,14 +65,11 @@ def main():
     print("🦀 Rust Extension:")
     try:
         import vhs_core
-        if hasattr(vhs_core, "detect_blue"):
-            print("✅ vhs_core imported successfully")
-        else:
-            print("⚠️  vhs_core extension not compiled (pure-Python fallback active)")
-            print("   Run: ./build_windows.bat (Windows) or cargo build --release")
+        print("✅ vhs_core imported successfully")
     except Exception:
-        print("⚠️  vhs_core extension not found (pure-Python fallback active)")
+        print("⚠️  vhs_core extension not found")
         print("   Run: ./build_windows.bat (Windows) or cargo build --release")
+        all_ok = False
 
     print()
     print("🎯 Files & Configuration:")

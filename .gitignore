@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 *.pcm
 *.log
-.fingerprint/
-**/target/
-vhs_core/target/
 target/
+**/target/
+/vhs_core/target/
+
