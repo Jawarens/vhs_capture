@@ -95,6 +95,7 @@ if errorlevel 1 (
 :: ── Build Rust extension ──────────────────────────────────────────
 echo.
 echo Building Rust extension (vhs_core)...
+set "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"
 cd "%~dp0vhs_core"
 %MATURIN% build --release >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
@@ -175,7 +176,7 @@ if errorlevel 1 (
 )
 
 :: Create version-named copy so Explorer immediately presents fresh icon without path cache collision
-copy "%~dp0dist\VHS Capture.exe" "%~dp0dist\VHS Capture v0.4.0.exe" >nul 2>&1
+copy "%~dp0dist\VHS Capture.exe" "%~dp0dist\VHS Capture v0.4.1.exe" >nul 2>&1
 
 :: Refresh Windows Explorer shell icon cache
 python -c "import ctypes, os; ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None); p = os.path.abspath('dist/VHS Capture.exe'); ctypes.windll.shell32.SHChangeNotify(0x00002000, 0x0005, p, None) if os.path.exists(p) else None" >nul 2>&1
@@ -186,7 +187,7 @@ echo BUILD COMPLETE
 echo.
 echo Executables:
 echo   - dist\VHS Capture.exe (with embedded icon & version resource)
-echo   - dist\VHS Capture v0.4.0.exe
+echo   - dist\VHS Capture v0.4.1.exe
 echo.
 echo FFmpeg : bundled via imageio-ffmpeg (libsvtav1/libx264)
 echo For GPU encoding (NVENC/QSV) also install:

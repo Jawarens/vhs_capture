@@ -1,10 +1,10 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "vhs_core"
-version = "0.4.0"
+version = "0.4.1"
 requires-python = ">=3.10"
 description = "Native Rust hot-path for VHS Capture"
 

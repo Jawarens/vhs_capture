@@ -2,9 +2,6 @@
 Regenerate vhs_capture.ico with Windows-compatible format and bump minor version
 to force Windows to update its cache
 """
-import os
-import struct
-import zlib
 
 # Bump version to force cache refresh
 ICON_VERSION = "1.1"
@@ -19,7 +16,7 @@ def main():
     # We'll keep the same design but ensure Windows accepts it
 
     print("Icon generation complete. Saved as vhs_capture.ico")
-    print(f"Note: Run the build again and Windows will pick up the new icon")
+    print("Note: Run the build again and Windows will pick up the new icon")
     print("After building, use one of these methods to clear icon cache:")
     print("1. Restart Windows Explorer (Task Manager -> kill explorer.exe then File -> New Task -> explorer.exe)")
     print("2. Run: ie4uinit.exe -ClearIconCache")

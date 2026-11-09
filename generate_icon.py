@@ -16,7 +16,7 @@ import io
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import (
     QGuiApplication, QImage, QPainter, QPainterPath, QColor,
-    QLinearGradient, QRadialGradient, QPen, QBrush, QFont
+    QLinearGradient, QRadialGradient, QPen, QFont
 )
 from PIL import Image
 
@@ -24,10 +24,8 @@ def render_icon(canvas_size=1024):
     """Render the modern VHS Camcorder icon into a QImage and multi-size ICO."""
     # Ensure QGuiApplication exists for font metrics and painter rendering
     app = QGuiApplication.instance()
-    _app_created = False
     if app is None:
         app = QGuiApplication(sys.argv if sys.argv else ["vhs_icon"])
-        _app_created = True
 
     img = QImage(canvas_size, canvas_size, QImage.Format.Format_ARGB32_Premultiplied)
     img.fill(Qt.GlobalColor.transparent)

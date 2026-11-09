@@ -4,7 +4,6 @@
 import sys
 import importlib
 import subprocess
-import os
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -30,7 +29,7 @@ def check_dependency(name, import_path=None, message=""):
 def check_external_tool(name, cmd="--version"):
     """Check if an external tool (ffmpeg) is installed."""
     try:
-        result = subprocess.run([name, cmd], capture_output=True, timeout=5, check=True)
+        subprocess.run([name, cmd], capture_output=True, timeout=5, check=True)
         print(f"✅ {name} found")
         return True
     except Exception:
@@ -64,7 +63,7 @@ def main():
     print()
     print("🦀 Rust Extension:")
     try:
-        import vhs_core
+        importlib.import_module("vhs_core")
         print("✅ vhs_core imported successfully")
     except Exception:
         print("⚠️  vhs_core extension not found")

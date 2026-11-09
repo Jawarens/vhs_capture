@@ -1,14 +1,14 @@
 [package]
 name = "vhs_core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [lib]
 name = "vhs_core"
-crate-type = ["cdylib"]   # Python extension (.pyd / .so)
+crate-type = ["cdylib", "rlib"]   # Python extension (.pyd / .so) + rlib for cargo test
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 
 [profile.release]
 opt-level = 3

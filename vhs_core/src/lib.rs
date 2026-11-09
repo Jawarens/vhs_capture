@@ -20,6 +20,8 @@ Exposed to Python via PyO3:
       capacity()  -> int
 */
 
+#![allow(clippy::useless_conversion)]
+
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::collections::VecDeque;
@@ -113,6 +115,7 @@ fn detect_blue(
 /// chunks_exact(3) lets the compiler auto-vectorise with SSE/AVX/NEON.
 /// We pre-allocate the output and write directly — one allocation, one pass.
 #[pyfunction]
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn bgr_to_rgb<'py>(py: Python<'py>, buf: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
     let len = buf.len();
     let out = py.allow_threads(|| {
@@ -204,4 +207,37 @@ fn vhs_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bgr_to_rgb, m)?)?;
     m.add_class::<FrameQueue>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_vhs_blue_detection() {
+        // Pure VCR blue screen (B=210, G=30, R=20)
+        assert!(is_vhs_blue(210, 30, 20));
+        // Dark black pixel
+        assert!(!is_vhs_blue(10, 10, 10));
+        // Neutral grey pixel (achromatic)
+        assert!(!is_vhs_blue(180, 180, 180));
+        // Red dominant pixel
+        assert!(!is_vhs_blue(40, 30, 220));
+        // Green dominant pixel
+        assert!(!is_vhs_blue(40, 220, 30));
+    }
+
+    #[test]
+    fn test_frame_queue_push_pop_capacity() {
+        let q = FrameQueue::new(2);
+        assert_eq!(q.capacity(), 2);
+        assert_eq!(q.__len__(), 0);
+        assert!(q.push(&[1, 2, 3]));
+        assert!(q.push(&[4, 5, 6]));
+        // Third push should be rejected (capacity = 2)
+        assert!(!q.push(&[7, 8, 9]));
+        assert_eq!(q.__len__(), 2);
+        q.clear();
+        assert_eq!(q.__len__(), 0);
+    }
 }

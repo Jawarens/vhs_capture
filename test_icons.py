@@ -63,7 +63,7 @@ def test_version_file():
         return False
     try:
         from PyInstaller.utils.win32.versioninfo import load_version_info_from_text_file
-        info = load_version_info_from_text_file(vpath)
+        _ = load_version_info_from_text_file(vpath)
         print("✅ Version info file exists and parses cleanly")
         return True
     except Exception as e:

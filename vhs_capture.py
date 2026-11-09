@@ -17,7 +17,7 @@ Requires: PyQt6 opencv-python numpy sounddevice imageio-ffmpeg
 FFmpeg is bundled via imageio-ffmpeg if not found on system PATH.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 import sys
 import os
@@ -45,7 +45,7 @@ from PyQt6.QtCore import (
     PYQT_VERSION_STR, qVersion
 )
 from PyQt6.QtGui import (
-    QImage, QPixmap, QColor, QPalette, QTextCursor, QPainter, QPen, QIcon,
+    QImage, QPixmap, QColor, QPalette, QTextCursor, QIcon,
     QShortcut, QKeySequence
 )
 
@@ -877,7 +877,7 @@ class AudioRecorder:
         )
         def _drain_stderr():
             if self._proc and self._proc.stderr:
-                for line in self._proc.stderr:
+                for _line in self._proc.stderr:
                     pass
         threading.Thread(target=_drain_stderr, daemon=True, name="audio-stderr").start()
 
@@ -1520,8 +1520,8 @@ class CameraPickerDialog(QDialog):
         if os.path.exists(_icon_path):
             self.setWindowIcon(QIcon(_icon_path))
         self.setStyleSheet(
-            f"QDialog{{background:#1a1a1a;color:#e8e8e8}}"
-            f"QLabel{{color:#e8e8e8}}"
+            "QDialog{background:#1a1a1a;color:#e8e8e8}"
+            "QLabel{color:#e8e8e8}"
         )
         self.selected_index = 0
         self.selected_w = 720
@@ -1541,11 +1541,11 @@ class CameraPickerDialog(QDialog):
 
         self.list = QListWidget()
         self.list.setStyleSheet(
-            f"QListWidget{{background:#0f0f0f;border:1px solid #2a2a2a;border-radius:8px;"
-            f"color:#e8e8e8;font-size:13px;padding:4px}}"
-            f"QListWidget::item{{padding:8px 10px;border-radius:6px}}"
-            f"QListWidget::item:selected{{background:#0c2a42;color:#fff}}"
-            f"QListWidget::item:hover{{background:#252525}}"
+            "QListWidget{background:#0f0f0f;border:1px solid #2a2a2a;border-radius:8px;"
+            "color:#e8e8e8;font-size:13px;padding:4px}"
+            "QListWidget::item{padding:8px 10px;border-radius:6px}"
+            "QListWidget::item:selected{background:#0c2a42;color:#fff}"
+            "QListWidget::item:hover{background:#252525}"
         )
         self.list.setMinimumHeight(160)
         lay.addWidget(self.list)
@@ -1558,9 +1558,9 @@ class CameraPickerDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         btns.setStyleSheet(
-            f"QPushButton{{background:#252525;color:#e8e8e8;border:1px solid #2a2a2a;"
-            f"border-radius:6px;padding:5px 18px;font-size:13px}}"
-            f"QPushButton:hover{{background:#303030}}"
+            "QPushButton{background:#252525;color:#e8e8e8;border:1px solid #2a2a2a;"
+            "border-radius:6px;padding:5px 18px;font-size:13px}"
+            "QPushButton:hover{background:#303030}"
         )
         btns.accepted.connect(self._accept)
         btns.rejected.connect(self.reject)
@@ -2853,10 +2853,28 @@ class VHSCapture(QMainWindow):
             "",
         ]
         curr_frame = 0
-        fps = float(self.spin_fps.value())
+        fps = max(1.0, float(self.spin_fps.value()))
+        fps_int = max(1, round(fps))
+
+        def _frames_to_tc(total_frames: int) -> str:
+            ff = total_frames % fps_int
+            total_sec = total_frames // fps_int
+            ss = total_sec % 60
+            mm = (total_sec // 60) % 60
+            hh = total_sec // 3600
+            return f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+
+        seg_dur_map = {fname: dur for fname, dur in self._segment_records}
         for i, (path_str, _) in enumerate(self._clips.items(), start=1):
             name = Path(path_str).name
-            edl_lines.append(f"{i:03d}  AX       V     C        00:00:00:00 00:00:00:00 00:00:00:00 00:00:00:00")
+            dur_sec = seg_dur_map.get(name, 0.0)
+            clip_frames = max(1, int(round(dur_sec * fps))) if dur_sec > 0 else 0
+            src_in = _frames_to_tc(0)
+            src_out = _frames_to_tc(clip_frames)
+            rec_in = _frames_to_tc(curr_frame)
+            rec_out = _frames_to_tc(curr_frame + clip_frames)
+            curr_frame += clip_frames
+            edl_lines.append(f"{i:03d}  AX       V     C        {src_in} {src_out} {rec_in} {rec_out}")
             edl_lines.append(f"* FROM CLIP NAME: {name}")
             edl_lines.append("")
 
