@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('README.md', '.'), ('vhs_capture.ico', '.')]
 binaries = []
-hiddenimports = ['cv2', 'numpy', 'vhs_core', 'sounddevice', 'imageio_ffmpeg', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets']
+hiddenimports = ['cv2', 'numpy', 'vhs_core', 'vhs_lib', 'sounddevice', 'imageio_ffmpeg', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets']
 tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('vhs_core')

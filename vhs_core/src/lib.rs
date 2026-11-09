@@ -8,6 +8,10 @@ Exposed to Python via PyO3:
       Nearest-neighbour downsample + integer-math hue check.
       Releases the GIL so Python threads run freely during detection.
 
+  analyse_signals(buf, width, height, sample_w, sample_h) -> (float, float, float, bool)
+      Single-pass analysis returning (blue_ratio, black_ratio, avg_luma, is_static).
+      Avoids intermediate NumPy allocations and releases the GIL.
+
   bgr_to_rgb(buf: bytes) -> bytes
       SIMD-vectorised B↔R channel swap. Uses chunks_exact for auto-vectorisation.
 
@@ -108,6 +112,99 @@ fn detect_blue(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Full signal analysis: Blue, Black, Luma & Analog Snow/Static
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Single-pass analysis returning (blue_ratio, black_ratio, avg_luma, is_static).
+#[inline]
+pub fn compute_signals(
+    buf: &[u8],
+    width: usize,
+    height: usize,
+    sample_w: usize,
+    sample_h: usize,
+) -> (f32, f32, f32, bool) {
+    if sample_w == 0 || sample_h == 0 || width == 0 || height == 0 {
+        return (0.0, 0.0, 0.0, false);
+    }
+
+    let stride = width * 3;
+    let x_step = (width << 16) / sample_w;
+    let y_step = (height << 16) / sample_h;
+    let total_samples = (sample_w * sample_h) as f64;
+
+    let mut blue_count: u32 = 0;
+    let mut black_count: u32 = 0;
+    let mut sum_luma: f64 = 0.0;
+    let mut sum_luma_sq: f64 = 0.0;
+    let mut sum_sat: f64 = 0.0;
+
+    for sy in 0..sample_h {
+        let src_y = ((sy * y_step) >> 16).min(height - 1);
+        let row_base = src_y * stride;
+
+        for sx in 0..sample_w {
+            let src_x = ((sx * x_step) >> 16).min(width - 1);
+            let i = row_base + src_x * 3;
+            if i + 2 < buf.len() {
+                let b = buf[i];
+                let g = buf[i + 1];
+                let r = buf[i + 2];
+
+                if is_vhs_blue(b, g, r) {
+                    blue_count += 1;
+                }
+
+                // Luma: 0.114*B + 0.587*G + 0.299*R (matches standard Rec.601 / OpenCV RGB to Gray)
+                let luma = (b as f64) * 0.114 + (g as f64) * 0.587 + (r as f64) * 0.299;
+                sum_luma += luma;
+                sum_luma_sq += luma * luma;
+
+                if luma < 22.0 {
+                    black_count += 1;
+                }
+
+                // Saturation: (max - min) / max
+                let max_c = r.max(g).max(b);
+                let min_c = r.min(g).min(b);
+                if max_c > 0 {
+                    let sat = (max_c - min_c) as f64 / (max_c as f64);
+                    sum_sat += sat;
+                }
+            }
+        }
+    }
+
+    let blue_ratio = (blue_count as f64 / total_samples) as f32;
+    let black_ratio = (black_count as f64 / total_samples) as f32;
+    let mean_luma = sum_luma / total_samples;
+    let avg_luma = mean_luma as f32;
+    let variance = (sum_luma_sq / total_samples) - (mean_luma * mean_luma);
+    let luma_std = if variance > 0.0 { variance.sqrt() as f32 } else { 0.0 };
+    let sat_mean = (sum_sat / total_samples) as f32;
+
+    let is_static = (luma_std > 45.0)
+        && (avg_luma >= 35.0 && avg_luma <= 170.0)
+        && (sat_mean < 0.25)
+        && (blue_ratio < 0.2);
+
+    (blue_ratio, black_ratio, avg_luma, is_static)
+}
+
+#[pyfunction]
+fn analyse_signals(
+    py: Python<'_>,
+    buf: &[u8],
+    width: usize,
+    height: usize,
+    sample_w: usize,
+    sample_h: usize,
+) -> PyResult<(f32, f32, f32, bool)> {
+    let result = py.allow_threads(|| compute_signals(buf, width, height, sample_w, sample_h));
+    Ok(result)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  BGR → RGB: SIMD-friendly channel swap
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -204,6 +301,7 @@ impl FrameQueue {
 #[pymodule]
 fn vhs_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(detect_blue, m)?)?;
+    m.add_function(wrap_pyfunction!(analyse_signals, m)?)?;
     m.add_function(wrap_pyfunction!(bgr_to_rgb, m)?)?;
     m.add_class::<FrameQueue>()?;
     Ok(())
@@ -225,6 +323,49 @@ mod tests {
         assert!(!is_vhs_blue(40, 30, 220));
         // Green dominant pixel
         assert!(!is_vhs_blue(40, 220, 30));
+    }
+
+    #[test]
+    fn test_compute_signals_blue_screen() {
+        // 10x10 pure VCR blue image (BGR = 210, 30, 20)
+        let mut buf = vec![0u8; 10 * 10 * 3];
+        for chunk in buf.chunks_exact_mut(3) {
+            chunk[0] = 210; // B
+            chunk[1] = 30;  // G
+            chunk[2] = 20;  // R
+        }
+        let (blue, black, avg_luma, is_static) = compute_signals(&buf, 10, 10, 10, 10);
+        assert!((blue - 1.0).abs() < 1e-4);
+        assert_eq!(black, 0.0);
+        assert!(avg_luma > 40.0);
+        assert!(!is_static);
+    }
+
+    #[test]
+    fn test_compute_signals_black_screen() {
+        // 10x10 pure black image (BGR = 0, 0, 0)
+        let buf = vec![0u8; 10 * 10 * 3];
+        let (blue, black, avg_luma, is_static) = compute_signals(&buf, 10, 10, 10, 10);
+        assert_eq!(blue, 0.0);
+        assert_eq!(black, 1.0);
+        assert_eq!(avg_luma, 0.0);
+        assert!(!is_static);
+    }
+
+    #[test]
+    fn test_compute_signals_static_snow() {
+        // Alternating high contrast black (0) and white (255) pixels -> analog RF snow noise
+        let mut buf = vec![0u8; 10 * 10 * 3];
+        for (i, chunk) in buf.chunks_exact_mut(3).enumerate() {
+            let val = if i % 2 == 0 { 240 } else { 10 };
+            chunk[0] = val;
+            chunk[1] = val;
+            chunk[2] = val;
+        }
+        let (blue, _black, avg_luma, is_static) = compute_signals(&buf, 10, 10, 10, 10);
+        assert_eq!(blue, 0.0);
+        assert!(avg_luma >= 35.0 && avg_luma <= 170.0);
+        assert!(is_static);
     }
 
     #[test]

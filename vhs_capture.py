@@ -19,1059 +19,97 @@ FFmpeg is bundled via imageio-ffmpeg if not found on system PATH.
 
 __version__ = "0.4.1"
 
-import sys
 import os
-import cv2
-import numpy as np
+import platform
+import shutil
 import subprocess
+import sys
 import threading
 import time
-import json
-import shutil
-import queue as _queue
 from datetime import datetime, timedelta
 from pathlib import Path
-import platform
 
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QSlider, QGroupBox, QTextEdit, QComboBox,
-    QSpinBox, QDoubleSpinBox, QFileDialog, QFrame, QProgressBar, QCheckBox,
-    QGridLayout, QDialog, QDialogButtonBox, QListWidget,
-    QListWidgetItem, QLineEdit, QScrollArea, QSizePolicy, QInputDialog
-)
+import cv2
+import numpy as np
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QMutex, QMutexLocker,
-    PYQT_VERSION_STR, qVersion
+    PYQT_VERSION_STR,
+    QMutex,
+    QMutexLocker,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+    qVersion,
 )
 from PyQt6.QtGui import (
-    QImage, QPixmap, QColor, QPalette, QTextCursor, QIcon,
-    QShortcut, QKeySequence
+    QColor,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QPalette,
+    QPixmap,
+    QShortcut,
+    QTextCursor,
 )
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+# Core modular library
+from vhs_lib import (
+    _FACTORY_PRESETS,
+    AudioMeterThread,
+    AudioRecorder,
+    FFmpegWriter,
+    _enumerate_cameras,
+    _system_ffmpeg,
+    _WriterThread,
+    analyse_signals,
+    delete_profile,
+    generate_chapters,
+    generate_edl,
+    list_profiles,
+    load_profile,
+    load_settings,
+    probe_encoders,
+    save_profile,
+    save_settings,
+)
+from vhs_lib.audio import _AUDIO_AVAILABLE, _AudioScanner, sd
+from vhs_lib.config import _PROFILES_DIR
+from vhs_lib.ffmpeg import _NO_WINDOW, FFMPEG_BIN, resource_path
+from vhs_lib.signals import _RUST_AVAILABLE
 
 # In windowed PyInstaller on Windows, sys.stdout and sys.stderr may be None.
 if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
 if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w", encoding="utf-8")
-
-def resource_path(relative_path: str) -> str:
-    """Get absolute path to resource, works for dev and for PyInstaller."""
-    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative_path)
-
-try:
-    import sounddevice as sd
-    _AUDIO_AVAILABLE = True
-except Exception:
-    _AUDIO_AVAILABLE = False
-
-# ── Resolve FFmpeg binary ──────────────────────────────────────────────────
-# Priority: hardware-capable system FFmpeg → PATH → imageio-ffmpeg bundled binary → error
-def _system_ffmpeg() -> str | None:
-    """
-    Find a system FFmpeg that supports hw encoders (NVENC/QSV).
-    Checks PATH first, then common Windows install locations.
-    """
-    found = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if found:
-        return found
-
-    if sys.platform == "win32":
-        local_app = os.environ.get("LOCALAPPDATA", "")
-        prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-        prog_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-        user_profile = os.environ.get("USERPROFILE", "")
-        prog_data = os.environ.get("ProgramData", "C:\\ProgramData")
-
-        candidates = [
-            os.path.join(prog_data, "chocolatey", "bin", "ffmpeg.exe"),
-            os.path.join(local_app, "Microsoft", "WinGet", "Packages",
-                         "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe",
-                         "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ProgramData", "chocolatey", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "tools", "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join(user_profile, "scoop", "apps", "ffmpeg", "current",
-                         "bin", "ffmpeg.exe"),
-            os.path.join(prog_data, "scoop", "apps", "ffmpeg",
-                         "current", "bin", "ffmpeg.exe"),
-            os.path.join(prog_files, "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join(prog_files_x86, "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ffmpeg", "bin", "ffmpeg.exe"),
-            os.path.join("C:\\", "ffmpeg", "ffmpeg.exe"),
-            os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
-        ]
-
-        winget_pkg_dir = os.path.join(local_app, "Microsoft", "WinGet", "Packages")
-        if os.path.isdir(winget_pkg_dir):
-            for entry in os.listdir(winget_pkg_dir):
-                if "ffmpeg" in entry.lower() or "gyan" in entry.lower():
-                    for root, _, files in os.walk(os.path.join(winget_pkg_dir, entry)):
-                        for f in files:
-                            if f.lower() == "ffmpeg.exe":
-                                candidates.append(os.path.join(root, f))
-
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-
-    return None
-
-def _find_ffmpeg() -> str:
-    """Return the path to a working ffmpeg binary, prioritizing hardware-capable system FFmpeg."""
-    sys_ff = _system_ffmpeg()
-    if sys_ff:
-        return sys_ff
-    # Fallback to imageio-ffmpeg bundled binary (works inside PyInstaller .exe too)
-    try:
-        import imageio_ffmpeg
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        if exe and Path(exe).exists():
-            return exe
-    except Exception:
-        pass
-    return "ffmpeg"
-
-FFMPEG_BIN = _find_ffmpeg()
-
-# On Windows, suppress the console window that briefly flashes for every
-# subprocess. Safe to unpack into both Popen() and run() calls.
-_NO_WINDOW = (
-    {"creationflags": subprocess.CREATE_NO_WINDOW}
-    if sys.platform == "win32" else {}
-)
-
-# ── Try to load the Rust extension; fall back to numpy gracefully ──────────
-try:
-    import vhs_core as _vhs_core
-    _RUST_AVAILABLE = True
-except ImportError:
-    _vhs_core = None
-    _RUST_AVAILABLE = False
-
-
-def _numpy_blue_ratio(small: np.ndarray, sample_w: int, sample_h: int) -> float:
-    """NumPy implementation of VHS blue detection."""
-    b_ch  = small[:, :, 0].astype(np.float32)
-    g_ch  = small[:, :, 1].astype(np.float32)
-    r_ch  = small[:, :, 2].astype(np.float32)
-    maxc  = np.maximum(np.maximum(r_ch, g_ch), b_ch)
-    minc  = np.minimum(np.minimum(r_ch, g_ch), b_ch)
-    d     = maxc - minc + 1e-6
-    sat   = np.divide(d, maxc, out=np.zeros_like(maxc), where=maxc > 0)
-    hue   = np.zeros_like(maxc)
-    mask_r = maxc == r_ch
-    mask_g = (maxc == g_ch) & ~mask_r
-    mask_b = ~mask_r & ~mask_g
-    hue[mask_r] = (60 * ((g_ch[mask_r] - b_ch[mask_r]) / d[mask_r]) + 360) % 360
-    hue[mask_g] =  60 * ((b_ch[mask_g] - r_ch[mask_g]) / d[mask_g]) + 120
-    hue[mask_b] =  60 * ((r_ch[mask_b] - g_ch[mask_b]) / d[mask_b]) + 240
-    blue_mask = (hue >= 190) & (hue <= 265) & (sat >= 0.20) & (b_ch > 60)
-    return float(blue_mask.sum()) / (sample_w * sample_h)
-
-
-def analyse_signals(frame: np.ndarray, sample_w: int = 80, sample_h: int = 45) -> dict:
-    """
-    Downsamples frame and detects:
-      - blue_ratio: fraction of pixels matching VHS blue
-      - black_ratio: fraction of pixels with luma < 22 (blank tape)
-      - avg_luma: mean brightness (0-255)
-      - is_static: analog static/snow RF noise
-    """
-    small = cv2.resize(frame, (sample_w, sample_h), interpolation=cv2.INTER_NEAREST)
-
-    # 1. Blue ratio (Rust SIMD hot-path or NumPy fallback)
-    if _RUST_AVAILABLE:
-        try:
-            blue_ratio = _vhs_core.detect_blue(
-                small.tobytes(), sample_w, sample_h, 0.0, sample_w, sample_h
-            )
-        except Exception:
-            blue_ratio = _numpy_blue_ratio(small, sample_w, sample_h)
-    else:
-        blue_ratio = _numpy_blue_ratio(small, sample_w, sample_h)
-
-    # 2. Black ratio & Luma
-    b_ch = small[:, :, 0].astype(np.float32)
-    g_ch = small[:, :, 1].astype(np.float32)
-    r_ch = small[:, :, 2].astype(np.float32)
-    luma = b_ch * 0.114 + g_ch * 0.587 + r_ch * 0.299
-    avg_luma = float(np.mean(luma))
-    black_ratio = float(np.sum(luma < 22.0)) / (sample_w * sample_h)
-
-    # 3. Static / Snow Noise
-    # Analog static has high spatial standard deviation in luma, mid-gray mean, and low saturation
-    luma_std = float(np.std(luma))
-    maxc = np.maximum(np.maximum(r_ch, g_ch), b_ch)
-    minc = np.minimum(np.minimum(r_ch, g_ch), b_ch)
-    d = maxc - minc + 1e-6
-    sat = np.divide(d, maxc, out=np.zeros_like(maxc), where=maxc > 0)
-    sat_mean = float(np.mean(sat))
-    is_static = bool((luma_std > 45.0) and (35.0 <= avg_luma <= 170.0) and (sat_mean < 0.25) and (blue_ratio < 0.2))
-
-    return {
-        "blue_ratio": blue_ratio,
-        "black_ratio": black_ratio,
-        "avg_luma": avg_luma,
-        "is_static": is_static,
-    }
-
-
-def analyse_blue_ratio(frame: np.ndarray, sample_w: int = 80, sample_h: int = 45) -> float:
-    """Backwards-compatible wrapper returning only blue ratio."""
-    return analyse_signals(frame, sample_w, sample_h)["blue_ratio"]
-
-
-# ─────────────────────────────────────────────
-#  Settings persistence
-# ─────────────────────────────────────────────
-
-_SETTINGS_PATH = Path.home() / ".vhs_capture_settings.json"
-_PROFILES_DIR  = Path.home() / ".vhs_capture_profiles"
-
-_FACTORY_PRESETS: dict[str, dict] = {
-    "PAL — Hauppauge USB-Live2 (Optimal)": {
-        "resolution": "PAL (720x576)",
-        "fps": 25.0,
-        "aspect_ratio": "4:3",
-        "deinterlace": "bwdif",
-        "mask_head_switching": True,
-        "audio_hum_filter": True,
-        "audio_normalize": True,
-        "audio_channel_mode": "stereo",
-        "auto_split_blue": True,
-        "auto_split_black": False,
-        "auto_stop_tape_end": True,
-        "tape_end_timeout": 30,
-        "crf": 23,
-    },
-    "PAL — Universum VHS (bwdif 50fps)": {
-        "resolution": "PAL (720x576)",
-        "fps": 25.0,
-        "aspect_ratio": "4:3",
-        "deinterlace": "bwdif",
-        "mask_head_switching": True,
-        "audio_hum_filter": True,
-        "audio_normalize": False,
-        "audio_channel_mode": "stereo",
-        "auto_split_blue": True,
-        "auto_split_black": False,
-        "auto_stop_tape_end": True,
-        "tape_end_timeout": 30,
-        "crf": 26,
-    },
-    "Archival Master (Lossless FFV1 + PCM)": {
-        "resolution": "PAL (720x576)",
-        "fps": 25.0,
-        "aspect_ratio": "4:3",
-        "deinterlace": "bwdif",
-        "mask_head_switching": False,
-        "audio_hum_filter": False,
-        "audio_normalize": False,
-        "audio_channel_mode": "stereo",
-        "auto_split_blue": False,
-        "auto_split_black": False,
-        "auto_stop_tape_end": True,
-        "tape_end_timeout": 45,
-        "crf": 0,
-        "encoder": "ffv1",
-    },
-    "NTSC — 60fps Fluid": {
-        "resolution": "NTSC (720x480)",
-        "fps": 29.97,
-        "aspect_ratio": "4:3",
-        "deinterlace": "bwdif",
-        "mask_head_switching": True,
-        "audio_hum_filter": True,
-        "audio_normalize": True,
-        "audio_channel_mode": "stereo",
-        "auto_split_blue": True,
-        "auto_split_black": False,
-        "auto_stop_tape_end": True,
-        "tape_end_timeout": 30,
-        "crf": 24,
-    },
-    "Compact Web Share (AV1 / H.264 Fast)": {
-        "resolution": "PAL (720x576)",
-        "fps": 25.0,
-        "aspect_ratio": "4:3",
-        "deinterlace": "bwdif",
-        "mask_head_switching": True,
-        "audio_hum_filter": True,
-        "audio_normalize": True,
-        "audio_channel_mode": "stereo",
-        "auto_split_blue": True,
-        "auto_split_black": False,
-        "auto_stop_tape_end": True,
-        "tape_end_timeout": 30,
-        "crf": 30,
-    },
-}
-
-def load_settings() -> dict:
-    try:
-        return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-def save_settings(d: dict):
-    try:
-        _SETTINGS_PATH.write_text(json.dumps(d, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-def list_profiles() -> list[str]:
-    """Return all available preset names followed by saved user profile names."""
-    names = list(_FACTORY_PRESETS.keys())
-    if _PROFILES_DIR.is_dir():
-        for p in sorted(_PROFILES_DIR.glob("*.json")):
-            stem = p.stem
-            if stem not in names:
-                names.append(stem)
-    return names
-
-def load_profile(name: str) -> dict:
-    if name in _FACTORY_PRESETS:
-        return dict(_FACTORY_PRESETS[name])
-    p = _PROFILES_DIR / f"{name}.json"
-    if p.is_file():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-def save_profile(name: str, data: dict):
-    _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    p = _PROFILES_DIR / f"{name}.json"
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-def delete_profile(name: str) -> bool:
-    p = _PROFILES_DIR / f"{name}.json"
-    if p.is_file():
-        try:
-            p.unlink()
-            return True
-        except Exception:
-            pass
-    return False
-
-
-# ─────────────────────────────────────────────
-#  Audio meter thread
-# ─────────────────────────────────────────────
-
-class AudioMeterThread(QThread):
-    """Reads microphone/line-in and emits RMS level 20x/sec."""
-    level = pyqtSignal(float)   # 0.0–1.0
-
-    def __init__(self, device_name: str = ""):
-        super().__init__()
-        self.device_name = device_name
-        self._running = False
-
-    def run(self):
-        if not _AUDIO_AVAILABLE:
-            return
-        self._running = True
-        try:
-            device_idx = None
-            if self.device_name and self.device_name.lower() != "no audio":
-                try:
-                    for i, d in enumerate(sd.query_devices()):
-                        if d.get("max_input_channels", 0) > 0 and self.device_name.lower() in d["name"].lower():
-                            device_idx = i
-                            break
-                except Exception:
-                    pass
-
-            with sd.InputStream(device=device_idx, channels=1, dtype='float32') as stream:
-                actual_rate = stream.samplerate or 44100
-                block = max(512, int(actual_rate // 20))  # ~50ms blocks
-                while self._running:
-                    data, _ = stream.read(block)
-                    rms = float(np.sqrt(np.mean(data ** 2)))
-                    db  = max(-60.0, 20 * np.log10(rms + 1e-9))
-                    lvl = (db + 60) / 60
-                    self.level.emit(min(1.0, max(0.0, lvl)))
-        except Exception:
-            pass
-
-    def stop(self):
-        self._running = False
-        self.quit()
-        self.wait(1000)
-
-
-# ─────────────────────────────────────────────
-#  Hardware encoder detection + profiles
-# ─────────────────────────────────────────────
-
-
-# Full encoder profiles including Lossless Archival Master (FFV1)
-_ENCODER_PROFILES = [
-    # ── NVIDIA NVENC ─────────────────────────────────────────────────
-    {
-        "name": "av1_nvenc", "label": "AV1  —  NVIDIA NVENC ⚡",
-        "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True, "probe_size": "256x256",
-        "args": lambda q, w, h: [
-            "-gpu", "0", "-preset", "p5", "-tune", "hq",
-            "-rc", "constqp", "-qp", str(q), "-surfaces", "16",
-            "-spatial-aq", "1", "-temporal-aq", "1",
-        ],
-    },
-    {
-        "name": "hevc_nvenc", "label": "HEVC  —  NVIDIA NVENC ⚡",
-        "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True, "probe_size": "256x256",
-        "args": lambda q, w, h: [
-            "-gpu", "0", "-preset", "p5", "-tune", "hq",
-            "-rc", "constqp", "-qp", str(q), "-surfaces", "16",
-            "-spatial-aq", "1", "-temporal-aq", "1",
-        ],
-    },
-    {
-        "name": "h264_nvenc", "label": "H.264  —  NVIDIA NVENC ⚡",
-        "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True, "probe_size": "256x256",
-        "args": lambda q, w, h: [
-            "-gpu", "0", "-preset", "p5", "-tune", "hq",
-            "-rc", "constqp", "-qp", str(q), "-surfaces", "16",
-            "-spatial-aq", "1", "-temporal-aq", "1",
-        ],
-    },
-    # ── Intel QuickSync ──────────────────────────────────────────────
-    {
-        "name": "av1_qsv", "label": "AV1  —  Intel QuickSync ⚡",
-        "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True, "probe_size": "256x256",
-        "args": lambda q, w, h: [
-            "-preset", "4", "-global_quality", str(q), "-look_ahead_depth", "0",
-        ],
-    },
-    {
-        "name": "hevc_qsv", "label": "HEVC  —  Intel QuickSync ⚡",
-        "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True, "probe_size": "256x256",
-        "args": lambda q, w, h: [
-            "-preset", "4", "-global_quality", str(q), "-look_ahead_depth", "0",
-        ],
-    },
-    {
-        "name": "h264_qsv", "label": "H.264  —  Intel QuickSync ⚡",
-        "is_hw": True, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": True, "probe_size": "256x256",
-        "args": lambda q, w, h: [
-            "-preset", "4", "-global_quality", str(q), "-look_ahead_depth", "0",
-        ],
-    },
-    # ── Software / CPU ───────────────────────────────────────────────
-    {
-        "name": "libsvtav1", "label": "AV1  —  SVT-AV1 (CPU fast)",
-        "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False, "probe_size": "64x64",
-        "args": lambda q, w, h: ["-preset", "6", "-crf", str(q), "-threads", "0"],
-    },
-    {
-        "name": "libaom-av1", "label": "AV1  —  libaom (CPU best quality)",
-        "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False, "probe_size": "64x64",
-        "args": lambda q, w, h: [
-            "-cpu-used", "6", "-b:v", "0", "-crf", str(q),
-            "-threads", "0", "-row-mt", "1",
-        ],
-    },
-    {
-        "name": "libx265", "label": "HEVC / H.265  —  CPU",
-        "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False, "probe_size": "64x64",
-        "args": lambda q, w, h: [
-            "-preset", "fast", "-crf", str(q),
-            "-threads", "0", "-x265-params", "pools=+:frame-threads=4",
-        ],
-    },
-    {
-        "name": "libx264", "label": "H.264  —  CPU",
-        "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False, "probe_size": "64x64",
-        "args": lambda q, w, h: ["-preset", "fast", "-crf", str(q), "-threads", "0"],
-    },
-    # ── Archival Lossless ────────────────────────────────────────────
-    {
-        "name": "ffv1", "label": "FFV1  —  Lossless Archival Master (MKV)",
-        "is_hw": False, "pixfmt": "yuv420p",
-        "requires_hw_ffmpeg": False, "probe_size": "64x64",
-        "args": lambda q, w, h: [
-            "-level", "3", "-g", "1", "-slices", "16", "-slicecrc", "1", "-threads", "0",
-        ],
-    },
-]
-
-
-def _friendly_hw_error(enc: str, stderr: str) -> str:
-    s = stderr.lower()
-    is_qsv   = "qsv" in enc
-    is_nvenc = "nvenc" in enc
-
-    if is_qsv:
-        if "invalid argument" in s or "error code: -22" in s:
-            return (f"{enc}: Intel MFX/OneVPL runtime not installed. "
-                    "Install Intel Graphics Driver and oneVPL GPU Runtime")
-        if "mfx session" in s or "mfxinit" in s or "error creating" in s:
-            return f"{enc}: MFX session failed — install Intel oneVPL GPU Runtime"
-        if "unsupported" in s or "not support" in s:
-            return f"{enc}: Intel GPU too old for this codec (requires 6th gen+)"
-        if "no capable devices" in s or "device open failed" in s:
-            return f"{enc}: no Intel GPU found or driver not loaded"
-
-    if is_nvenc:
-        if "invalid argument" in s or "error code: -22" in s:
-            return f"{enc}: invalid argument — driver mismatch or codec not supported (AV1 NVENC requires RTX 4000+)"
-        if "libcuda" in s or "cannot load nvcuda" in s or "no cuda" in s:
-            return f"{enc}: NVIDIA driver not found — install Game Ready or Studio driver"
-        if "no capable devices" in s or "device open failed" in s:
-            return f"{enc}: no capable NVIDIA GPU found"
-        if "not enough" in s and "surface" in s:
-            return f"{enc}: not enough VRAM surfaces — try a lower resolution"
-
-    if "unsupported" in s or "not support" in s:
-        return f"{enc}: GPU too old or codec not supported"
-    for line in reversed(stderr.strip().splitlines()):
-        line = line.strip()
-        if line and ("error" in line.lower() or "fail" in line.lower()):
-            return line[:140]
-    return f"{enc}: probe failed (unknown error)"
-
-
-def probe_encoders():
-    """
-    Test each encoder by piping real rawvideo at its minimum valid resolution.
-    All probes run in parallel via ThreadPoolExecutor.
-    Returns (working: list[dict], failed_hw: list[dict]).
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    sys_ff = _system_ffmpeg()
-    bnd_ff = FFMPEG_BIN
-
-    def _test(profile):
-        enc       = profile["name"]
-        pixfmt    = profile["pixfmt"]
-        psize     = profile.get("probe_size", "256x256")
-        pw, ph    = (int(x) for x in psize.split("x"))
-        args      = profile["args"](28, pw, ph)
-        needs_sys = profile.get("requires_hw_ffmpeg", False)
-        ff = sys_ff if needs_sys else bnd_ff
-
-        if ff is None:
-            if profile["is_hw"]:
-                return "failed", {**profile,
-                    "fail_reason": f"{enc}: system FFmpeg not found — run: winget install ffmpeg"}
-            return "skip", None
-
-        black = bytes(pw * ph * 3)
-        cmd = [
-            ff, "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-pix_fmt", "bgr24",
-            "-s", psize, "-r", "25", "-i", "pipe:0",
-            "-c:v", enc,
-        ] + args + ["-pix_fmt", pixfmt, "-frames:v", "2", "-f", "null", "-"]
-
-        try:
-            r = subprocess.run(cmd, input=black, capture_output=True, timeout=15,
-                               **_NO_WINDOW)
-            if r.returncode == 0:
-                p = dict(profile)
-                p["ffmpeg_bin"] = ff
-                return "ok", p
-            elif profile["is_hw"]:
-                stderr = r.stderr.decode(errors="replace")
-                return "failed", {**profile,
-                    "fail_reason": _friendly_hw_error(enc, stderr),
-                    "stderr_raw": stderr[-500:]}
-            return "skip", None
-        except subprocess.TimeoutExpired:
-            if profile["is_hw"]:
-                return "failed", {**profile, "fail_reason": f"{enc}: probe timed out"}
-            return "skip", None
-        except FileNotFoundError:
-            return "skip", None
-
-    results = [None] * len(_ENCODER_PROFILES)
-    with ThreadPoolExecutor(max_workers=len(_ENCODER_PROFILES)) as ex:
-        futures = {ex.submit(_test, p): i for i, p in enumerate(_ENCODER_PROFILES)}
-        for fut in as_completed(futures):
-            results[futures[fut]] = fut.result()
-
-    working, failed = [], []
-    for item in results:
-        if item is None:
-            continue
-        status, data = item
-        if status == "ok":
-            working.append(data)
-        elif status == "failed" and data:
-            failed.append(data)
-    return working, failed
-
-
-# ─────────────────────────────────────────────
-#  FFmpeg pipe writer
-# ─────────────────────────────────────────────
-
-class FFmpegWriter:
-    """Wraps an ffmpeg process that accepts raw BGR frames on stdin."""
-
-    def __init__(self, output_path: str, width: int, height: int, fps: float,
-                 encoder: str = "libsvtav1", crf: int = 28,
-                 encoder_info: dict | None = None,
-                 aspect_ratio: str = "4:3",
-                 deinterlace: str = "off",
-                 mask_head_switching: bool = True):
-        self.output_path  = output_path
-        self.width        = width
-        self.height       = height
-        self.fps          = fps
-        self.encoder      = encoder
-        self.crf          = crf
-        self.encoder_info = encoder_info
-        self.aspect_ratio = aspect_ratio
-        self.deinterlace  = deinterlace
-        self.mask_head_switching = mask_head_switching
-        self._proc        = None
-        self._lock        = threading.Lock()
-        self._stderr_lines: list[str] = []
-
-    def start(self):
-        info    = self.encoder_info or {}
-        enc     = self.encoder
-        pixfmt  = info.get("pixfmt", "yuv420p")
-        ff      = info.get("ffmpeg_bin", FFMPEG_BIN)
-
-        args_fn  = info.get("args")
-        enc_args = args_fn(self.crf, self.width, self.height) if args_fn \
-                   else ["-crf", str(self.crf), "-threads", "0"]
-
-        # Build video filter chain (deinterlace + head switching mask)
-        vf_filters = []
-        if self.mask_head_switching:
-            # Replaces the bottom 12 noisy scanlines with a clean solid black bar
-            vf_filters.append("drawbox=y=ih-12:h=12:color=black:t=fill")
-
-        is_nvenc = "nvenc" in enc
-        has_cuda_filters = False
-        if is_nvenc and self.deinterlace in ("bwdif", "bwdif_2x", "yadif"):
-            # Accelerate deinterlacing directly on CUDA cores (offloads CPU to GPU)
-            vf_filters.append("format=nv12")
-            vf_filters.append("hwupload_cuda")
-            if self.deinterlace == "bwdif":
-                vf_filters.append("bwdif_cuda=mode=0:parity=-1:deint=1")
-            elif self.deinterlace == "bwdif_2x":
-                vf_filters.append("bwdif_cuda=mode=1:parity=-1:deint=1")
-            elif self.deinterlace == "yadif":
-                vf_filters.append("yadif_cuda=mode=0:parity=-1:deint=1")
-            has_cuda_filters = True
-        else:
-            if self.deinterlace == "bwdif":
-                vf_filters.append("bwdif=mode=0:parity=-1:deint=1")
-            elif self.deinterlace == "bwdif_2x":
-                vf_filters.append("bwdif=mode=1:parity=-1:deint=1")
-            elif self.deinterlace == "yadif":
-                vf_filters.append("yadif=mode=0:parity=-1:deint=1")
-
-        vf_args = ["-vf", ",".join(vf_filters)] if vf_filters else []
-        pixfmt_args = [] if has_cuda_filters else ["-pix_fmt", pixfmt]
-
-        cmd = [
-            ff, "-y",
-            "-thread_queue_size", "512",
-            "-f", "rawvideo", "-pix_fmt", "bgr24",
-            "-s", f"{self.width}x{self.height}",
-            "-r", str(self.fps),
-            "-i", "pipe:0",
-        ] + vf_args + [
-            "-c:v", enc,
-        ] + enc_args + pixfmt_args + [
-            "-aspect", self.aspect_ratio,
-        ]
-
-        if self.output_path.lower().endswith(".mp4"):
-            cmd += ["-movflags", "+faststart"]
-
-        cmd.append(self.output_path)
-
-        self._proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            **_NO_WINDOW
-        )
-        self._stderr_lines = []
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
-
-    def _drain_stderr(self):
-        if self._proc and self._proc.stderr:
-            for line in self._proc.stderr:
-                decoded = line.decode(errors="replace").strip()
-                if not decoded:
-                    continue
-                if decoded.startswith("frame=") or decoded.startswith("size="):
-                    continue
-                if decoded.startswith("video:") or decoded.startswith("audio:"):
-                    continue
-                self._stderr_lines.append(decoded)
-                if len(self._stderr_lines) > 200:
-                    self._stderr_lines = self._stderr_lines[-100:]
-
-    def last_errors(self, n=5) -> list[str]:
-        return self._stderr_lines[-n:]
-
-    def write_raw(self, raw: bytes):
-        with self._lock:
-            if self._proc and self._proc.stdin:
-                try:
-                    self._proc.stdin.write(raw)
-                except BrokenPipeError:
-                    pass
-
-    def stop(self):
-        with self._lock:
-            if self._proc:
-                try:
-                    self._proc.stdin.close()
-                except Exception:
-                    pass
-                try:
-                    self._proc.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    self._proc.terminate()
-                    try:
-                        self._proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        self._proc.kill()
-                self._proc = None
-
-    @property
-    def running(self):
-        return self._proc is not None
-
-
-# ─────────────────────────────────────────────
-#  Audio device enumeration
-# ─────────────────────────────────────────────
-
-def list_audio_devices(ffmpeg_bin: str) -> list[str]:
-    """Enumerate audio input devices available to FFmpeg."""
-    devices = []
-
-    if sys.platform == "win32":
-        cmd = [ffmpeg_bin, "-list_devices", "true",
-               "-f", "dshow", "-i", "dummy",
-               "-loglevel", "debug"]
-        try:
-            r = subprocess.run(cmd, capture_output=True, timeout=6, **_NO_WINDOW)
-            output = r.stderr.decode(errors="replace")
-            import re
-            for line in output.splitlines():
-                if "(audio)" in line.lower():
-                    m = re.search(r'"([^"]+)"', line)
-                    if m:
-                        name = m.group(1)
-                        if name not in devices and name != "dummy":
-                            devices.append(name)
-            if not devices:
-                in_audio_section = False
-                for line in output.splitlines():
-                    if "DirectShow audio devices" in line:
-                        in_audio_section = True
-                        continue
-                    if in_audio_section:
-                        if "DirectShow video devices" in line:
-                            break
-                        m = re.search(r'"([^"]+)"', line)
-                        if m:
-                            name = m.group(1)
-                            if name not in devices:
-                                devices.append(name)
-        except Exception:
-            pass
-    else:
-        try:
-            r = subprocess.run(["pactl", "list", "sources", "short"],
-                               capture_output=True, timeout=5, **_NO_WINDOW)
-            for line in r.stdout.decode().splitlines():
-                parts = line.split()
-                if len(parts) >= 2:
-                    devices.append(parts[1])
-        except Exception:
-            pass
-
-    if not devices and _AUDIO_AVAILABLE:
-        try:
-            import sounddevice as _sd
-            for d in _sd.query_devices():
-                if d["max_input_channels"] > 0:
-                    devices.append(d["name"])
-        except Exception:
-            pass
-
-    return devices
-
-
-# ─────────────────────────────────────────────
-#  Per-segment audio recorder
-# ─────────────────────────────────────────────
-
-class AudioRecorder:
-    """
-    Captures audio into raw PCM and muxes with precision A/V async resample,
-    mono duplication, 50/60Hz mains hum suppression, and normalization.
-    """
-
-    def __init__(self, device_name: str, temp_path: str, ffmpeg_bin: str,
-                 channel_mode: str = "stereo",
-                 hum_filter: bool = False,
-                 normalize: bool = False,
-                 is_lossless: bool = False):
-        self.device_name = device_name
-        self.temp_path   = temp_path
-        self.ffmpeg_bin  = ffmpeg_bin
-        self.channel_mode = channel_mode
-        self.hum_filter = hum_filter
-        self.normalize = normalize
-        self.is_lossless = is_lossless
-        self._proc: subprocess.Popen | None = None
-
-    def start(self):
-        if sys.platform == "win32":
-            device_arg = f"audio={self.device_name}"
-            cmd = [
-                self.ffmpeg_bin, "-y",
-                "-f", "dshow",
-                "-analyzeduration", "4000000",
-                "-probesize", "4000000",
-                "-i", device_arg,
-                "-f", "s16le",
-                "-ar", "48000",
-                "-ac", "2",
-                "-thread_queue_size", "2048",
-                self.temp_path,
-            ]
-        else:
-            cmd = [
-                self.ffmpeg_bin, "-y",
-                "-f", "pulse",
-                "-i", self.device_name,
-                "-f", "s16le",
-                "-ar", "48000",
-                "-ac", "2",
-                self.temp_path,
-            ]
-
-        self._proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            **_NO_WINDOW
-        )
-        def _drain_stderr():
-            if self._proc and self._proc.stderr:
-                for _line in self._proc.stderr:
-                    pass
-        threading.Thread(target=_drain_stderr, daemon=True, name="audio-stderr").start()
-
-    def stop_and_mux(self, video_path: str, video_writer: FFmpegWriter | None = None,
-                     on_done=None, on_error=None):
-        def _work():
-            if video_writer:
-                video_writer.stop()
-
-            if self._proc:
-                try:
-                    self._proc.terminate()
-                except Exception:
-                    pass
-                try:
-                    self._proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
-                    self._proc.wait(timeout=2)
-                self._proc = None
-
-            time.sleep(0.3)
-
-            pcm = Path(self.temp_path)
-            vpath = Path(video_path)
-
-            if not vpath.exists():
-                pcm.unlink(missing_ok=True)
-                if on_error:
-                    on_error(f"Video file missing: {video_path}")
-                return
-
-            if not pcm.exists() or pcm.stat().st_size < 20480:
-                pcm.unlink(missing_ok=True)
-                if on_error:
-                    on_error("Audio file empty or missing — saved video only")
-                if on_done:
-                    on_done()
-                return
-
-            # Construct audio filter graph:
-            # 1. aresample=async=1000 ensures smooth hardware clock alignment and zero A/V drift
-            af_filters = ["aresample=async=1000"]
-            if self.channel_mode == "mono_left":
-                af_filters.append("pan=stereo|c0=c0|c1=c0")
-            elif self.channel_mode == "mono_right":
-                af_filters.append("pan=stereo|c0=c1|c1=c1")
-
-            if self.hum_filter:
-                # 65Hz highpass filter cleans 50Hz/60Hz mains hum from VCR ground loops
-                af_filters.append("highpass=f=65")
-
-            if self.normalize:
-                # EBU R128 loudness normalization
-                af_filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
-
-            af_arg = ",".join(af_filters)
-
-            out_tmp = vpath.with_suffix(".mux_tmp" + vpath.suffix)
-            is_mp4  = vpath.suffix.lower() == ".mp4"
-            is_mkv  = vpath.suffix.lower() == ".mkv"
-
-            # Use lossless FLAC for MKV/FFV1 or AAC 192k for MP4/delivery
-            audio_codec = ["-c:a", "flac"] if (is_mkv and self.is_lossless) else ["-c:a", "aac", "-b:a", "192k"]
-
-            cmd = [
-                self.ffmpeg_bin, "-y",
-                "-i", str(vpath),
-                "-f", "s16le", "-ar", "48000", "-ac", "2",
-                "-i", str(pcm),
-                "-c:v", "copy",
-                "-af", af_arg,
-            ] + audio_codec + [
-                "-shortest",
-            ]
-            if is_mp4:
-                cmd += ["-movflags", "+faststart"]
-            cmd.append(str(out_tmp))
-
-            try:
-                r = subprocess.run(cmd, capture_output=True, timeout=180, **_NO_WINDOW)
-                if r.returncode == 0 and out_tmp.exists():
-                    replaced = False
-                    for _ in range(5):
-                        try:
-                            out_tmp.replace(vpath)
-                            replaced = True
-                            break
-                        except OSError:
-                            time.sleep(0.2)
-                    if not replaced:
-                        out_tmp.replace(vpath)
-                    if on_done:
-                        on_done()
-                else:
-                    err = r.stderr.decode(errors="replace")[-400:]
-                    if on_error:
-                        on_error(f"Mux failed (rc={r.returncode}): {err}")
-                    out_tmp.unlink(missing_ok=True)
-                    if on_done:
-                        on_done()
-            except Exception as e:
-                if on_error:
-                    on_error(str(e))
-                out_tmp.unlink(missing_ok=True)
-                if on_done:
-                    on_done()
-            finally:
-                pcm.unlink(missing_ok=True)
-
-        threading.Thread(target=_work, daemon=True, name="audio-mux").start()
-
-
-# ─────────────────────────────────────────────
-#  Writer Thread
-# ─────────────────────────────────────────────
-
-class _WriterThread(threading.Thread):
-    """Dedicated thread that drains frame queue into active FFmpegWriter."""
-    def __init__(self, capacity=12, on_error=None):
-        super().__init__(daemon=True)
-        if _RUST_AVAILABLE:
-            self._q = _vhs_core.FrameQueue(capacity)
-            self._use_rust = True
-        else:
-            self._q = _queue.Queue(maxsize=capacity)
-            self._use_rust = False
-        self._writer: FFmpegWriter | None = None
-        self._lock = threading.Lock()
-        self._running = True
-        self._has_item = threading.Event()
-        self._on_error = on_error
-
-    def set_writer(self, w: FFmpegWriter | None) -> FFmpegWriter | None:
-        with self._lock:
-            old = self._writer
-            if old:
-                self._flush_queue_to(old)
-            self._writer = w
-        return old
-
-    def _flush_queue_to(self, target_writer: FFmpegWriter):
-        if self._use_rust:
-            while True:
-                raw = self._q.pop()
-                if raw is None:
-                    break
-                target_writer.write_raw(raw)
-        else:
-            while not self._q.empty():
-                try:
-                    raw = self._q.get_nowait()
-                    target_writer.write_raw(raw)
-                except _queue.Empty:
-                    break
-
-    def push(self, frame: np.ndarray):
-        raw = frame.tobytes()
-        if self._use_rust:
-            self._q.push(raw)
-        else:
-            try:
-                self._q.put_nowait(raw)
-            except _queue.Full:
-                pass
-        self._has_item.set()
-
-    def run(self):
-        while self._running:
-            if self._use_rust:
-                raw = self._q.pop()
-                if raw is None:
-                    self._has_item.clear()
-                    self._has_item.wait(timeout=0.05)
-                    continue
-            else:
-                try:
-                    raw = self._q.get(timeout=0.05)
-                except _queue.Empty:
-                    continue
-
-            with self._lock:
-                w = self._writer
-            if w:
-                w.write_raw(raw)
-
-    def stop(self):
-        self._running = False
-        self._has_item.set()
-        self.join(timeout=5)
-        with self._lock:
-            if self._writer:
-                self._writer.stop()
-                self._writer = None
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
 
 
 # ─────────────────────────────────────────────
@@ -1122,7 +160,7 @@ class CaptureThread(QThread):
             try:
                 # cv2.CAP_PROP_SETTINGS (38) is DirectShow property sheet
                 return bool(self._cap.set(cv2.CAP_PROP_SETTINGS, 1))
-            except Exception:
+            except (cv2.error, OSError):
                 return False
         return False
 
@@ -1174,7 +212,7 @@ class CaptureThread(QThread):
         cfg = self.cfg
         out_dir = Path(cfg["output_dir"])
         out_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
 
         is_lossless = (cfg.get("encoder") == "ffv1")
         ext = "mkv" if is_lossless else "mp4"
@@ -1286,7 +324,7 @@ class CaptureThread(QThread):
                 last_preview = now
                 fh, fw = frame.shape[:2]
                 pw = 640
-                ph = max(180, int(round(pw * fh / fw)))
+                ph = max(180, round(pw * fh / fw))
                 preview = cv2.resize(frame, (pw, ph), interpolation=cv2.INTER_LINEAR)
 
                 if self._recording:
@@ -1388,14 +426,13 @@ class CaptureThread(QThread):
                 else:
                     silence_start_time = None
 
-                if loop["auto_stop_tape_end"] and self._recording:
-                    if blank_start_time and silence_start_time:
-                        dead_air = now - max(blank_start_time, silence_start_time)
-                        if dead_air >= loop["tape_end_timeout"]:
-                            cond = "Blue screen" if is_blue_now else "Black screen" if is_black_now else "Static noise"
-                            self.tape_ended.emit(f"{cond} and audio silence for {dead_air:.0f}s")
-                            blank_start_time = None
-                            silence_start_time = None
+                if loop["auto_stop_tape_end"] and self._recording and blank_start_time and silence_start_time:
+                    dead_air = now - max(blank_start_time, silence_start_time)
+                    if dead_air >= loop["tape_end_timeout"]:
+                        cond = "Blue screen" if is_blue_now else "Black screen" if is_black_now else "Static noise"
+                        self.tape_ended.emit(f"{cond} and audio silence for {dead_air:.0f}s")
+                        blank_start_time = None
+                        silence_start_time = None
 
             # ── Write frame with A/V sync & drop-frame protection ────────────
             with QMutexLocker(self._mutex):
@@ -1404,7 +441,7 @@ class CaptureThread(QThread):
             if rec and not self._in_blue and not self._in_black:
                 # Wall-clock timestamp sync check
                 elapsed = now - self._start_time
-                expected_frames = int(round(elapsed * loop["fps"]))
+                expected_frames = round(elapsed * loop["fps"])
                 lag = expected_frames - (self._frames_written + 1)
 
                 # If capture card dropped frames due to tracking hitch, fill with duplicate frames
@@ -1445,7 +482,7 @@ class EventLog:
         self.events = []
 
     def add(self, kind: str, message: str, detail: str = ""):
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().astimezone().strftime("%H:%M:%S")
         self.events.append({"ts": ts, "kind": kind, "msg": message, "detail": detail})
 
     def clear(self):
@@ -1455,59 +492,6 @@ class EventLog:
 # ─────────────────────────────────────────────
 #  Camera picker dialog
 # ─────────────────────────────────────────────
-
-def _probe_camera(index: int) -> dict | None:
-    PROBE_RESOLUTIONS = [
-        (1920, 1080),
-        (1280,  720),
-        ( 720,  576),  # PAL
-        ( 720,  480),  # NTSC
-        ( 640,  480),
-        ( 320,  240),
-    ]
-    backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
-    cap = cv2.VideoCapture(index, backend)
-    if not cap.isOpened() and backend != cv2.CAP_ANY:
-        cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        return None
-
-    best_w, best_h = 0, 0
-    for tw, th in PROBE_RESOLUTIONS:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  tw)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, th)
-        got_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        got_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if got_w * got_h > best_w * best_h:
-            best_w, best_h = got_w, got_h
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    backend_name = cap.getBackendName() if hasattr(cap, "getBackendName") else ""
-    cap.release()
-
-    if best_w == 0:
-        return None
-
-    label = f"Camera {index}  —  {best_w}×{best_h}"
-    if fps > 0:
-        label += f" @ {fps:.0f}fps"
-    if backend_name:
-        label += f"  [{backend_name}]"
-
-    return {"index": index, "label": label, "w": best_w, "h": best_h, "fps": fps}
-
-
-def _enumerate_cameras(max_index=8):
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    found = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {ex.submit(_probe_camera, i): i for i in range(max_index)}
-        for fut in as_completed(futures):
-            info = fut.result()
-            if info:
-                found.append(info)
-    return found
-
 
 class CameraPickerDialog(QDialog):
     _scan_done = pyqtSignal(list)
@@ -1640,14 +624,6 @@ def _card(parent=None) -> QFrame:
 #  Main Window
 # ─────────────────────────────────────────────
 
-class _AudioScanner(QThread):
-    done = pyqtSignal(list)
-    def run(self):
-        ff = _system_ffmpeg() or FFMPEG_BIN
-        devs = list_audio_devices(ff)
-        self.done.emit(devs)
-
-
 class VHSCapture(QMainWindow):
     _clip_size_updated = pyqtSignal(object, str, float)
 
@@ -1686,7 +662,7 @@ class VHSCapture(QMainWindow):
                     tmp_file.unlink(missing_ok=True)
                 for tmp_file in out_p.glob("*.mux_tmp*"):
                     tmp_file.unlink(missing_ok=True)
-        except Exception:
+        except OSError:
             pass
 
         self._clip_size_updated.connect(self._update_clip_item)
@@ -2061,7 +1037,7 @@ class VHSCapture(QMainWindow):
         self.edit_part.setFixedHeight(30)
         out_lay.addLayout(self._settings_row("Part prefix:", self.edit_part))
 
-        ts_now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts_now = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         self.preview_fname_lbl = QLabel(f"→  clip01_{ts_now}.mp4")
         self.preview_fname_lbl.setStyleSheet("color:#aaa;font-size:11px;font-family:Consolas,'Courier New',monospace")
         out_lay.addWidget(self.preview_fname_lbl)
@@ -2069,7 +1045,7 @@ class VHSCapture(QMainWindow):
         def _update_fname_preview():
             t = self.edit_title.text().strip()
             p = self.edit_part.text().strip()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
             enc = self._selected_encoder_info()
             ext = "mkv" if (enc and enc["name"] == "ffv1") else "mp4"
             parts = [x for x in [t, p, "clip01", ts] if x]
@@ -2335,16 +1311,14 @@ class VHSCapture(QMainWindow):
         elif idx == 1:  # 720x480 NTSC
             self.spin_fps.setValue(29.97)
             self.combo_aspect.setCurrentIndex(0)
-        elif idx == 2:  # 1280x720
-            self.combo_aspect.setCurrentIndex(1)
-        elif idx == 3:  # 1920x1080
+        elif idx == 2 or idx == 3:  # 1280x720
             self.combo_aspect.setCurrentIndex(1)
         elif idx == 4:  # 640x480
             self.combo_aspect.setCurrentIndex(0)
 
     def _check_disk_space(self):
         try:
-            total, used, free = shutil.disk_usage(self._output_dir)
+            _, _, free = shutil.disk_usage(self._output_dir)
             free_gb = free / (1024 ** 3)
             # Estimate remaining hours (~3.5 GB/hr for modern encoding, ~12 GB/hr for FFV1)
             is_ffv1 = (self._selected_encoder_info() or {}).get("name") == "ffv1"
@@ -2357,10 +1331,10 @@ class VHSCapture(QMainWindow):
             if free_gb < 1.5 and self._recording:
                 self._log_event("error", "CRITICAL DISK SPACE (<1.5 GB)", "Stopping recording safely to prevent data loss")
                 self._stop_recording()
-        except Exception:
+        except OSError:
             pass
 
-    def _populate_encoders(self, working: list[dict], failed: list[dict] = None):
+    def _populate_encoders(self, working: list[dict], failed: list[dict] | None = None):
         failed = failed or []
         self.combo_enc.clear()
         if not working:
@@ -2737,7 +1711,7 @@ class VHSCapture(QMainWindow):
             )
             val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
             is_light = val == 1
-        except Exception:
+        except OSError:
             return
 
         if is_light:
@@ -2820,7 +1794,7 @@ class VHSCapture(QMainWindow):
 
         out_dir = Path(self._output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         t = self.edit_title.text().strip()
         p = self.edit_part.text().strip()
         parts = [x for x in [t, p, "snapshot", ts] if x]
@@ -2829,7 +1803,7 @@ class VHSCapture(QMainWindow):
         try:
             cv2.imwrite(str(snap_path), frame)
             self._log_event("info", "📸 Snapshot saved", snap_path.name)
-        except Exception as e:
+        except (cv2.error, OSError) as e:
             self._log_event("error", "Snapshot error", str(e))
 
     def _export_edl_and_chapters(self):
@@ -2842,59 +1816,25 @@ class VHSCapture(QMainWindow):
         out_dir.mkdir(parents=True, exist_ok=True)
         t = self.edit_title.text().strip() or "VHS_Tape"
         p = self.edit_part.text().strip()
-        ts = datetime.now().strftime("%Y%m%d")
+        ts = datetime.now().astimezone().strftime("%Y%m%d")
         base = "_".join([x for x in [t, p, ts] if x])
+
+        fps = max(1.0, float(self.spin_fps.value()))
 
         # 1. CMX 3600 EDL
         edl_file = out_dir / f"{base}.edl"
-        edl_lines = [
-            f"TITLE: {base}",
-            "FCM: NON-DROP FRAME",
-            "",
-        ]
-        curr_frame = 0
-        fps = max(1.0, float(self.spin_fps.value()))
-        fps_int = max(1, round(fps))
-
-        def _frames_to_tc(total_frames: int) -> str:
-            ff = total_frames % fps_int
-            total_sec = total_frames // fps_int
-            ss = total_sec % 60
-            mm = (total_sec // 60) % 60
-            hh = total_sec // 3600
-            return f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
-
         seg_dur_map = {fname: dur for fname, dur in self._segment_records}
-        for i, (path_str, _) in enumerate(self._clips.items(), start=1):
-            name = Path(path_str).name
-            dur_sec = seg_dur_map.get(name, 0.0)
-            clip_frames = max(1, int(round(dur_sec * fps))) if dur_sec > 0 else 0
-            src_in = _frames_to_tc(0)
-            src_out = _frames_to_tc(clip_frames)
-            rec_in = _frames_to_tc(curr_frame)
-            rec_out = _frames_to_tc(curr_frame + clip_frames)
-            curr_frame += clip_frames
-            edl_lines.append(f"{i:03d}  AX       V     C        {src_in} {src_out} {rec_in} {rec_out}")
-            edl_lines.append(f"* FROM CLIP NAME: {name}")
-            edl_lines.append("")
-
-        edl_file.write_text("\n".join(edl_lines), encoding="utf-8")
+        segments_for_export = [
+            (path_str, seg_dur_map.get(Path(path_str).name, 0.0))
+            for path_str in self._clips
+        ]
+        edl_content = generate_edl(base, segments_for_export, fps)
+        edl_file.write_text(edl_content, encoding="utf-8")
 
         # 2. MKV / FFmpeg Chapters File
         ch_file = out_dir / f"{base}_chapters.txt"
-        ch_lines = [";FFMETADATA1"]
-        curr_ms = 0
-        for i, (fname, dur_sec) in enumerate(self._segment_records, start=1):
-            end_ms = curr_ms + int(dur_sec * 1000)
-            ch_lines.append("[CHAPTER]")
-            ch_lines.append("TIMEBASE=1/1000")
-            ch_lines.append(f"START={curr_ms}")
-            ch_lines.append(f"END={end_ms}")
-            ch_lines.append(f"title=Part {i} - {fname}")
-            ch_lines.append("")
-            curr_ms = end_ms
-
-        ch_file.write_text("\n".join(ch_lines), encoding="utf-8")
+        ch_content = generate_chapters(self._segment_records)
+        ch_file.write_text(ch_content, encoding="utf-8")
         self._log_event("info", "EDL & Chapters exported", f"{edl_file.name} / {ch_file.name}")
 
     def _toggle_record(self):
@@ -3004,7 +1944,7 @@ class VHSCapture(QMainWindow):
                         sz = Path(real).stat().st_size
                         if sz > 0:
                             self._clip_size_updated.emit(item, Path(real).name, sz / 1024 / 1024)
-                    except Exception:
+                    except OSError:
                         pass
                 threading.Thread(target=_refresh, daemon=True).start()
             return
@@ -3075,6 +2015,9 @@ class VHSCapture(QMainWindow):
 
     def _on_error(self, msg: str):
         self._log_event("error", "Error", msg)
+        if "FFmpeg" in msg and self._recording:
+            self._log_event("error", "Stopping recording due to FFmpeg encoder error")
+            self._stop_recording()
 
     def _pick_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Select output directory", self._output_dir)
@@ -3089,7 +2032,7 @@ class VHSCapture(QMainWindow):
             "info": "#378add", "blue": "#5b9bd5", "resume": "#639922",
             "split": "#ba7517", "error": "#e24b4a", "rec": "#3b6d11", "stop": "#888780",
         }
-        ts  = datetime.now().strftime("%H:%M:%S")
+        ts  = datetime.now().astimezone().strftime("%H:%M:%S")
         col = colours.get(kind, "#888")
         det = f" <span style='color:#888'>{detail}</span>" if detail else ""
         html = (f"<span style='color:#888'>[{ts}]</span> "
@@ -3167,11 +2110,18 @@ class VHSCapture(QMainWindow):
         ff_ver_str = "Bundled (imageio-ffmpeg)"
         if ff_path:
             try:
-                res = subprocess.run([ff_path, "-version"], capture_output=True, text=True, timeout=2, **_NO_WINDOW)
+                res = subprocess.run(
+                    [ff_path, "-version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                    **_NO_WINDOW,
+                )
                 first_line = res.stdout.splitlines()[0] if res.stdout else ""
                 if "ffmpeg version" in first_line:
                     ff_ver_str = first_line.split("Copyright")[0].strip()
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 pass
 
         os_str = f"{platform.system()} {platform.release()} (Build {platform.version()})"
@@ -3250,7 +2200,7 @@ if __name__ == "__main__":
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("vhs.capture.app")
-        except Exception:
+        except OSError:
             pass
 
     app = QApplication(sys.argv)

@@ -7,4 +7,8 @@ __pycache__/
 target/
 **/target/
 /vhs_core/target/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
 
